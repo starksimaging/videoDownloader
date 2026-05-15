@@ -10,6 +10,7 @@ import Cocoa
 class ViewController: NSViewController {
 
     @IBOutlet weak var urlTextField: NSTextField!
+    @IBOutlet weak var modePopupButton: NSPopUpButton!
     @IBOutlet weak var folderLabel: NSTextField!
     @IBOutlet var logTextView: NSTextView!
 
@@ -43,6 +44,11 @@ class ViewController: NSViewController {
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
         pathLabel.lineBreakMode = .byTruncatingMiddle
         pathLabel.textColor = .secondaryLabelColor
+
+        let modePopup = NSPopUpButton()
+        modePopup.translatesAutoresizingMaskIntoConstraints = false
+        modePopup.addItems(withTitles: ["Video MP4", "Audio Only MP3"])
+        modePopup.selectItem(withTitle: "Video MP4")
 
         let downloadButton = NSButton(title: "Download Video", target: self, action: #selector(downloadClicked(_:)))
         downloadButton.translatesAutoresizingMaskIntoConstraints = false
@@ -87,6 +93,7 @@ class ViewController: NSViewController {
         view.addSubview(urlField)
         view.addSubview(chooseButton)
         view.addSubview(pathLabel)
+        view.addSubview(modePopup)
         view.addSubview(downloadButton)
         view.addSubview(clearButton)
         view.addSubview(finderButton)
@@ -95,6 +102,7 @@ class ViewController: NSViewController {
         view.addSubview(scrollView)
 
         urlTextField = urlField
+        modePopupButton = modePopup
         folderLabel = pathLabel
         logTextView = textView
         progressIndicator = progressBar
@@ -113,7 +121,11 @@ class ViewController: NSViewController {
             pathLabel.leadingAnchor.constraint(equalTo: chooseButton.trailingAnchor, constant: 12),
             pathLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
 
-            downloadButton.topAnchor.constraint(equalTo: chooseButton.bottomAnchor, constant: 12),
+            modePopup.topAnchor.constraint(equalTo: chooseButton.bottomAnchor, constant: 12),
+            modePopup.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            modePopup.widthAnchor.constraint(equalToConstant: 170),
+
+            downloadButton.topAnchor.constraint(equalTo: modePopup.bottomAnchor, constant: 12),
             downloadButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
 
             clearButton.centerYAnchor.constraint(equalTo: downloadButton.centerYAnchor),
@@ -215,22 +227,40 @@ class ViewController: NSViewController {
 
         // yt-dlp uses this template to choose the final filename in the selected folder.
         let outputTemplate = folder.appendingPathComponent("%(title)s.%(ext)s").path
+        let isAudioOnlyMode = modePopupButton.titleOfSelectedItem == "Audio Only MP3"
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ytDLPPath)
 
-        var arguments = [
-            "--newline",
-            "--print",
-            "after_move:filepath",
-            // Prefer QuickTime-compatible MP4 video with M4A audio.
-            // Static ffmpeg and ffprobe builds are required so the app works on Macs without Homebrew.
-            "--ffmpeg-location", resourcePath,
-            "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
-            "--merge-output-format", "mp4",
-            "-o", outputTemplate,
-            url
-        ]
+        var arguments = ["--newline", "--print", "after_move:filepath"]
+
+        if isAudioOnlyMode {
+            appendLog("Audio Only MP3 mode selected.\n")
+
+            arguments += [
+                "--ffmpeg-location", resourcePath,
+                // -x tells yt-dlp to extract only the audio track.
+                "-x",
+                // --audio-format mp3 asks ffmpeg to convert that audio to MP3.
+                "--audio-format", "mp3",
+                // --audio-quality 0 requests yt-dlp's best MP3 quality setting.
+                "--audio-quality", "0",
+                "-o", outputTemplate,
+                url
+            ]
+        } else {
+            appendLog("Video MP4 mode selected.\n")
+
+            arguments += [
+                // Prefer QuickTime-compatible MP4 video with M4A audio.
+                // Static ffmpeg and ffprobe builds are required so the app works on Macs without Homebrew.
+                "--ffmpeg-location", resourcePath,
+                "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
+                "--merge-output-format", "mp4",
+                "-o", outputTemplate,
+                url
+            ]
+        }
 
         appendLog("Using app bundle Resources folder for ffmpeg tools.\n")
         appendLog("Full yt-dlp arguments:\n\(formattedArguments(arguments))\n\n")
@@ -276,6 +306,13 @@ class ViewController: NSViewController {
                 if finishedProcess.terminationStatus != 0 {
                     self?.finishProgress(exitCode: finishedProcess.terminationStatus)
                     self?.appendLog("Error: yt-dlp exited with non-zero status \(finishedProcess.terminationStatus).\n")
+                    return
+                }
+
+                if isAudioOnlyMode {
+                    self?.progressIndicator.doubleValue = 100
+                    self?.statusLabel.stringValue = "Audio MP3 download complete"
+                    self?.appendLog("Audio Only MP3 download complete.\n")
                     return
                 }
 
@@ -570,8 +607,8 @@ class ViewController: NSViewController {
     }
 
     func isLikelyVideoFile(_ fileURL: URL) -> Bool {
-        let videoExtensions = ["mp4", "mkv", "webm", "mov", "m4v", "avi", "flv", "wmv"]
-        return videoExtensions.contains(fileURL.pathExtension.lowercased())
+        let mediaExtensions = ["mp3", "mp4", "mkv", "webm", "mov", "m4v", "avi", "flv", "wmv"]
+        return mediaExtensions.contains(fileURL.pathExtension.lowercased())
     }
 
     func currentURLText() -> String {
