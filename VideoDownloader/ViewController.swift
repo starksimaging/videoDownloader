@@ -13,6 +13,7 @@ class ViewController: NSViewController {
     @IBOutlet weak var modePopupButton: NSPopUpButton!
     @IBOutlet weak var folderLabel: NSTextField!
     @IBOutlet var logTextView: NSTextView!
+    @IBOutlet weak var preserveChaptersCheckbox: NSButton!
 
     var progressIndicator: NSProgressIndicator!
     var statusLabel: NSTextField!
@@ -111,6 +112,19 @@ class ViewController: NSViewController {
         let selectorRow = makeHorizontalStack(spacing: 12, views: [typeCard, qualityCard])
         selectorRow.distribution = .fillEqually
 
+        let chaptersCheckbox = NSButton(checkboxWithTitle: "Preserve Chapters", target: nil, action: nil)
+        chaptersCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        chaptersCheckbox.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        chaptersCheckbox.contentTintColor = .white
+        chaptersCheckbox.toolTip = "Embed available yt-dlp chapter markers and save the video metadata"
+
+        let chaptersCard = makeInputRow(
+            symbolName: "list.bullet.rectangle",
+            title: "Chapter Markers",
+            subtitle: "Keep chapters when the source provides them",
+            trailingView: chaptersCheckbox
+        )
+
         let downloadButton = GradientButton(title: "Download", target: self, action: #selector(downloadClicked(_:)))
         downloadButton.translatesAutoresizingMaskIntoConstraints = false
         downloadButton.font = NSFont.systemFont(ofSize: 16, weight: .semibold)
@@ -176,7 +190,7 @@ class ViewController: NSViewController {
         ])
         footerRow.distribution = .fillEqually
 
-        [appIcon, titleLabel, subtitleLabel, urlRow, folderRow, selectorRow, downloadButton, statusPanel, footerRow].forEach {
+        [appIcon, titleLabel, subtitleLabel, urlRow, folderRow, selectorRow, chaptersCard, downloadButton, statusPanel, footerRow].forEach {
             stack.addArrangedSubview($0)
         }
 
@@ -188,6 +202,7 @@ class ViewController: NSViewController {
         urlTextField = urlField
         modePopupButton = modePopup
         qualityPopupButton = qualityPopup
+        preserveChaptersCheckbox = chaptersCheckbox
         folderLabel = pathLabel
         logTextView = textView
         progressIndicator = progressBar
@@ -231,6 +246,7 @@ class ViewController: NSViewController {
             urlRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             folderRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             selectorRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            chaptersCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             downloadButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
             downloadButton.heightAnchor.constraint(equalToConstant: 52),
             statusPanel.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -609,11 +625,18 @@ class ViewController: NSViewController {
         // yt-dlp uses this template to choose the final filename in the selected folder.
         let outputTemplate = folder.appendingPathComponent("%(title)s.%(ext)s").path
         let isAudioOnlyMode = modePopupButton.titleOfSelectedItem == "Audio Only MP3"
+        let shouldPreserveChapters = preserveChaptersCheckbox.state == .on
 
         let process = Process()
         process.executableURL = ytDLPURL
 
         var arguments = ["--newline", "--print", "after_move:filepath"]
+
+        if shouldPreserveChapters {
+            appendLog("Chapter preservation enabled.\n")
+            appendLog("Requesting chapter metadata from yt-dlp.\n")
+            arguments += chapterArguments()
+        }
 
         if isAudioOnlyMode {
             appendLog("Audio Only MP3 mode selected.\n")
@@ -688,6 +711,10 @@ class ViewController: NSViewController {
                     self?.finishProgress(exitCode: finishedProcess.terminationStatus)
                     self?.appendLog("Error: yt-dlp exited with non-zero status \(finishedProcess.terminationStatus).\n")
                     return
+                }
+
+                if shouldPreserveChapters {
+                    self?.inspectChapterMetadata(for: self?.lastDownloadedFileURL)
                 }
 
                 if isAudioOnlyMode {
@@ -830,6 +857,9 @@ class ViewController: NSViewController {
         process.executableURL = URL(fileURLWithPath: ffmpegPath)
         process.arguments = [
             "-i", inputFileURL.path,
+            // Carry global metadata and chapter tables from yt-dlp's MP4 into the converted MP4.
+            "-map_metadata", "0",
+            "-map_chapters", "0",
             "-c:v", "libx264",
             "-c:a", "aac",
             outputFileURL.path
@@ -1076,5 +1106,63 @@ class ViewController: NSViewController {
                 argument.contains(" ") ? "\"\(argument)\"" : argument
             }
             .joined(separator: " ")
+    }
+
+    /// yt-dlp chapters are timestamped sections supplied by the video's publisher.
+    /// `--embed-chapters` writes those markers into supported media containers, while
+    /// `--write-info-json` saves the source metadata beside the download. Some videos
+    /// simply do not publish chapters; yt-dlp still completes those downloads normally.
+    func chapterArguments() -> [String] {
+        preserveChaptersCheckbox.state == .on
+            ? ["--embed-chapters", "--write-info-json"]
+            : []
+    }
+
+    private func inspectChapterMetadata(for mediaURL: URL?) {
+        guard let mediaURL else {
+            appendLog("Chapter metadata was requested, but its sidecar file could not be located.\n")
+            return
+        }
+
+        let infoJSONURL = mediaURL
+            .deletingPathExtension()
+            .appendingPathExtension("info.json")
+
+        // Reading/parsing the optional sidecar off the main queue keeps the AppKit UI responsive.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let data = try? Data(contentsOf: infoJSONURL),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                DispatchQueue.main.async {
+                    self?.appendLog("No chapter metadata was found; the download is still complete.\n")
+                }
+                return
+            }
+
+            let chapters = root["chapters"] as? [[String: Any]] ?? []
+            let lines = chapters.compactMap { chapter -> String? in
+                guard let start = chapter["start_time"] as? Double else { return nil }
+                let title = (chapter["title"] as? String) ?? "Untitled chapter"
+                return "\(self?.chapterTimestamp(start) ?? "00:00") - \(title)"
+            }
+
+            DispatchQueue.main.async {
+                self?.appendLog("Chapter metadata saved: \(infoJSONURL.path)\n")
+                guard !lines.isEmpty else {
+                    self?.appendLog("This video does not contain chapter markers.\n")
+                    return
+                }
+                self?.appendLog("Chapters:\n\(lines.joined(separator: "\n"))\n")
+            }
+        }
+    }
+
+    private func chapterTimestamp(_ seconds: Double) -> String {
+        let totalSeconds = max(0, Int(seconds.rounded(.down)))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let remainingSeconds = totalSeconds % 60
+        return hours > 0
+            ? String(format: "%02d:%02d:%02d", hours, minutes, remainingSeconds)
+            : String(format: "%02d:%02d", minutes, remainingSeconds)
     }
 }

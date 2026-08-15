@@ -746,6 +746,13 @@
                                     <action selector="downloadClicked:" target="XfG-lQ-9wD" id="download-action-001"/>
                                 </connections>
                             </button>
+                            <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="chapters-CB-001">
+                                <rect key="frame" x="160" y="168" width="135" height="18"/>
+                                <buttonCell key="cell" type="check" title="Preserve Chapters" bezelStyle="regularSquare" imagePosition="left" state="off" inset="2" id="chapters-CB-cell">
+                                    <behavior key="behavior" changeContents="YES" doesNotDimImage="YES" lightByContents="YES"/>
+                                    <font key="font" metaFont="system"/>
+                                </buttonCell>
+                            </button>
                             <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="clear-BTN-001">
                                 <rect key="frame" x="378" y="168" width="82" height="24"/>
                                 <buttonCell key="cell" type="push" title="Clear Log" bezelStyle="rounded" alignment="center" borderStyle="border" imageScaling="proportionallyDown" inset="2" id="clear-BTN-cell">
@@ -789,6 +796,8 @@
                             <constraint firstAttribute="trailing" secondItem="clear-BTN-001" secondAttribute="trailing" constant="20" id="clear-trailing-001"/>
                             <constraint firstItem="download-BTN-001" firstAttribute="leading" secondItem="m2S-Jp-Qdl" secondAttribute="leading" constant="20" id="download-leading-001"/>
                             <constraint firstItem="download-BTN-001" firstAttribute="top" secondItem="choose-BTN-001" secondAttribute="bottom" constant="5" id="download-top-001"/>
+                            <constraint firstItem="chapters-CB-001" firstAttribute="centerY" secondItem="download-BTN-001" secondAttribute="centerY" id="chapters-center-001"/>
+                            <constraint firstItem="chapters-CB-001" firstAttribute="leading" secondItem="download-BTN-001" secondAttribute="trailing" constant="17" id="chapters-leading-001"/>
                             <constraint firstItem="folder-LBL-001" firstAttribute="centerY" secondItem="choose-BTN-001" secondAttribute="centerY" id="folder-center-001"/>
                             <constraint firstItem="folder-LBL-001" firstAttribute="leading" secondItem="choose-BTN-001" secondAttribute="trailing" constant="12" id="folder-leading-001"/>
                             <constraint firstAttribute="trailing" secondItem="folder-LBL-001" secondAttribute="trailing" constant="20" id="folder-trailing-001"/>
@@ -804,6 +813,7 @@
                     <connections>
                         <outlet property="folderLabel" destination="folder-LBL-001" id="folder-outlet-001"/>
                         <outlet property="logTextView" destination="log-TV-001" id="log-outlet-001"/>
+                        <outlet property="preserveChaptersCheckbox" destination="chapters-CB-001" id="chapters-outlet-001"/>
                         <outlet property="urlTextField" destination="url-TF-001" id="url-outlet-001"/>
                     </connections>
                 </viewController>
