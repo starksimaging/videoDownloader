@@ -18,6 +18,9 @@ class ViewController: NSViewController {
     var statusLabel: NSTextField!
     var revealButton: NSButton!
     var qualityPopupButton: NSPopUpButton!
+    var ytDLPUpdateButton: NSButton!
+    var ytDLPChannelPopup: NSPopUpButton!
+    var ytDLPVersionLabel: NSTextField!
     var selectedFolder: URL?
     var lastDownloadedFileURL: URL?
     var downloadStartDate: Date?
@@ -130,6 +133,13 @@ class ViewController: NSViewController {
         let clearButton = makePlainIconButton(title: "Clear Log", symbolName: "xmark.circle", action: #selector(clearLogClicked(_:)))
         let finderButton = makePlainIconButton(title: "Reveal", symbolName: "clock", action: #selector(revealInFinderClicked(_:)))
         finderButton.isEnabled = false
+        let updateButton = makePlainIconButton(title: "Check for yt-dlp Updates", symbolName: "arrow.triangle.2.circlepath", action: #selector(checkForYTDLPUpdatesClicked(_:)))
+        let channelPopup = makePopup(items: YTDLPManager.UpdateChannel.allCases.map(\.displayName))
+        channelPopup.target = self
+        channelPopup.action = #selector(ytDLPChannelChanged(_:))
+        channelPopup.selectItem(withTitle: YTDLPManager.shared.selectedChannel.displayName)
+        channelPopup.toolTip = "Choose the yt-dlp update channel"
+        let versionLabel = makeLabel("yt-dlp: preparing…", size: 11, weight: .regular, color: NSColor.white.withAlphaComponent(0.66), alignment: .left)
 
         let statusCopy = NSStackView(views: [progressLabel, statusSubtitle, progressBar])
         statusCopy.translatesAutoresizingMaskIntoConstraints = false
@@ -137,7 +147,7 @@ class ViewController: NSViewController {
         statusCopy.alignment = .leading
         statusCopy.spacing = 5
 
-        let statusActions = makeHorizontalStack(spacing: 12, views: [finderButton, clearButton])
+        let statusActions = makeHorizontalStack(spacing: 10, views: [channelPopup, updateButton, finderButton, clearButton])
         let statusTopRow = makeHorizontalStack(spacing: 16, views: [statusCopy, statusActions])
         statusTopRow.alignment = .centerY
         statusCopy.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -183,6 +193,10 @@ class ViewController: NSViewController {
         progressIndicator = progressBar
         statusLabel = progressLabel
         revealButton = finderButton
+        ytDLPUpdateButton = updateButton
+        ytDLPChannelPopup = channelPopup
+        ytDLPVersionLabel = versionLabel
+        statusCopy.insertArrangedSubview(versionLabel, at: 2)
 
         let panelWidth = panel.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.66)
         panelWidth.priority = .defaultHigh
@@ -234,6 +248,8 @@ class ViewController: NSViewController {
             scrollView.widthAnchor.constraint(equalTo: statusStack.widthAnchor),
             scrollView.heightAnchor.constraint(equalToConstant: 76)
         ])
+
+        prepareYTDLPAndCheckForUpdates()
     }
 
     func makeAppIconView() -> NSView {
@@ -540,17 +556,10 @@ class ViewController: NSViewController {
             return
         }
 
-        guard let ytDLPPath = Bundle.main.path(forResource: "yt-dlp", ofType: nil) else {
-            appendLog("Error: Could not find bundled yt-dlp in the app bundle.\n")
-            appendLog("Check that yt-dlp is included in Copy Bundle Resources.\n")
-            return
-        }
-
         let ffmpegPath = Bundle.main.path(forResource: "ffmpeg", ofType: nil)
         let ffprobePath = Bundle.main.path(forResource: "ffprobe", ofType: nil)
 
         appendLog("Resource path: \(resourcePath)\n")
-        appendLog("yt-dlp path: \(ytDLPPath)\n")
         appendLog("ffmpeg path: \(ffmpegPath ?? "Not found")\n")
         appendLog("ffprobe path: \(ffprobePath ?? "Not found")\n")
         appendLog("Selected output folder: \(folder.path)\n")
@@ -567,18 +576,42 @@ class ViewController: NSViewController {
             return
         }
 
-        guard validateExecutable(path: ytDLPPath, name: "yt-dlp"),
-              validateExecutable(path: ffmpegPath, name: "ffmpeg"),
+        guard validateExecutable(path: ffmpegPath, name: "ffmpeg"),
               validateExecutable(path: ffprobePath, name: "ffprobe") else {
             return
         }
+
+        sender.isEnabled = false
+        statusLabel.stringValue = "Preparing yt-dlp..."
+        YTDLPManager.shared.executableURL(log: { [weak self] in self?.appendLog($0) }) { [weak self, weak sender] result in
+            sender?.isEnabled = true
+            guard let self else { return }
+            switch result {
+            case .success(let executableURL):
+                self.startDownload(
+                    sourceURL: url,
+                    folder: folder,
+                    ytDLPURL: executableURL,
+                    resourcePath: resourcePath,
+                    ffmpegPath: ffmpegPath
+                )
+            case .failure(let error):
+                self.statusLabel.stringValue = "yt-dlp unavailable"
+                self.appendLog("Error preparing yt-dlp: \(error.localizedDescription)\n")
+            }
+        }
+    }
+
+    private func startDownload(sourceURL url: String, folder: URL, ytDLPURL: URL, resourcePath: String, ffmpegPath: String) {
+        appendLog("yt-dlp path: \(ytDLPURL.path)\n")
+        appendLog("Selected output folder: \(folder.path)\n")
 
         // yt-dlp uses this template to choose the final filename in the selected folder.
         let outputTemplate = folder.appendingPathComponent("%(title)s.%(ext)s").path
         let isAudioOnlyMode = modePopupButton.titleOfSelectedItem == "Audio Only MP3"
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: ytDLPPath)
+        process.executableURL = ytDLPURL
 
         var arguments = ["--newline", "--print", "after_move:filepath"]
 
@@ -686,6 +719,59 @@ class ViewController: NSViewController {
             errorPipe.fileHandleForReading.readabilityHandler = nil
             appendLog("Error running yt-dlp: \(error)\n")
         }
+    }
+
+    private func prepareYTDLPAndCheckForUpdates() {
+        YTDLPManager.shared.executableURL(log: { [weak self] in self?.appendLog($0) }) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let executableURL):
+                self.appendLog("Using writable yt-dlp at \(executableURL.path).\n")
+                self.runYTDLPUpdate(manual: false)
+            case .failure(let error):
+                self.ytDLPVersionLabel.stringValue = "yt-dlp unavailable"
+                self.appendLog("Error preparing yt-dlp: \(error.localizedDescription)\n")
+            }
+        }
+    }
+
+    @objc private func checkForYTDLPUpdatesClicked(_ sender: NSButton) {
+        guard currentProcess == nil else {
+            appendLog("Wait for the current download or conversion to finish before updating yt-dlp.\n")
+            return
+        }
+        runYTDLPUpdate(manual: true)
+    }
+
+    @objc private func ytDLPChannelChanged(_ sender: NSPopUpButton) {
+        guard let title = sender.titleOfSelectedItem,
+              let channel = YTDLPManager.UpdateChannel(rawValue: title.lowercased()) else { return }
+        YTDLPManager.shared.selectedChannel = channel
+        appendLog("yt-dlp update channel set to \(channel.displayName).\n")
+    }
+
+    private func runYTDLPUpdate(manual: Bool) {
+        YTDLPManager.shared.checkForUpdates(
+            manual: manual,
+            log: { [weak self] in self?.appendLog($0) },
+            stateChanged: { [weak self] isUpdating in
+                self?.ytDLPUpdateButton.isEnabled = !isUpdating
+                self?.ytDLPChannelPopup.isEnabled = !isUpdating
+                self?.ytDLPUpdateButton.title = isUpdating ? "Updating yt-dlp…" : "Check for yt-dlp Updates"
+                if isUpdating {
+                    self?.ytDLPVersionLabel.stringValue = "yt-dlp: updating…"
+                }
+            },
+            completion: { [weak self] result in
+                switch result {
+                case .success(let version):
+                    self?.ytDLPVersionLabel.stringValue = "yt-dlp: \(version)"
+                case .failure(let error):
+                    self?.ytDLPVersionLabel.stringValue = "yt-dlp update failed"
+                    self?.appendLog("yt-dlp update error: \(error.localizedDescription)\n")
+                }
+            }
+        )
     }
 
     @IBAction func clearLogClicked(_ sender: NSButton) {
