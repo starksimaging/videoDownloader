@@ -114,6 +114,7 @@ class ViewController: NSViewController {
 
         let chaptersCheckbox = NSButton(checkboxWithTitle: "Preserve Chapters", target: nil, action: nil)
         chaptersCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        chaptersCheckbox.state = .on
         chaptersCheckbox.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         chaptersCheckbox.contentTintColor = .white
         chaptersCheckbox.toolTip = "Embed available yt-dlp chapter markers and save the video metadata"
@@ -565,6 +566,11 @@ class ViewController: NSViewController {
             return
         }
 
+        // Capture the live checkbox value at the instant the download is requested.
+        // Preparing/updating the writable yt-dlp executable is asynchronous, so the
+        // rest of this download must not re-read a UI control that may change later.
+        let shouldPreserveChapters = preserveChaptersCheckbox.state == .on
+
         // This app uses helper programs bundled inside the app, not Homebrew.
         // Homebrew paths such as /opt/homebrew/bin/ffmpeg should not be used for distribution.
         guard let resourcePath = Bundle.main.resourcePath else {
@@ -609,7 +615,9 @@ class ViewController: NSViewController {
                     folder: folder,
                     ytDLPURL: executableURL,
                     resourcePath: resourcePath,
-                    ffmpegPath: ffmpegPath
+                    ffmpegPath: ffmpegPath,
+                    ffprobePath: ffprobePath,
+                    shouldPreserveChapters: shouldPreserveChapters
                 )
             case .failure(let error):
                 self.statusLabel.stringValue = "yt-dlp unavailable"
@@ -618,24 +626,39 @@ class ViewController: NSViewController {
         }
     }
 
-    private func startDownload(sourceURL url: String, folder: URL, ytDLPURL: URL, resourcePath: String, ffmpegPath: String) {
+    private func startDownload(
+        sourceURL url: String,
+        folder: URL,
+        ytDLPURL: URL,
+        resourcePath: String,
+        ffmpegPath: String,
+        ffprobePath: String,
+        shouldPreserveChapters: Bool
+    ) {
         appendLog("yt-dlp path: \(ytDLPURL.path)\n")
         appendLog("Selected output folder: \(folder.path)\n")
 
         // yt-dlp uses this template to choose the final filename in the selected folder.
         let outputTemplate = folder.appendingPathComponent("%(title)s.%(ext)s").path
         let isAudioOnlyMode = modePopupButton.titleOfSelectedItem == "Audio Only MP3"
-        let shouldPreserveChapters = preserveChaptersCheckbox.state == .on
-
         let process = Process()
         process.executableURL = ytDLPURL
 
         var arguments = ["--newline", "--print", "after_move:filepath"]
 
+        if let denoPath = availableDenoPath() {
+            arguments += ["--js-runtimes", "deno:\(denoPath)"]
+            appendLog("Deno JavaScript runtime enabled: \(denoPath)\n")
+        } else {
+            appendLog("Warning: Deno was not found. YouTube may reject some media requests.\n")
+        }
+
         if shouldPreserveChapters {
             appendLog("Chapter preservation enabled.\n")
-            appendLog("Requesting chapter metadata from yt-dlp.\n")
-            arguments += chapterArguments()
+            appendLog("Adding --embed-chapters to yt-dlp.\n")
+            arguments += chapterArguments(preservingChapters: true)
+        } else {
+            appendLog("Chapter preservation disabled.\n")
         }
 
         if isAudioOnlyMode {
@@ -713,6 +736,8 @@ class ViewController: NSViewController {
                     return
                 }
 
+                self?.appendLog("yt-dlp download completed.\n")
+
                 if shouldPreserveChapters {
                     self?.inspectChapterMetadata(for: self?.lastDownloadedFileURL)
                 }
@@ -730,7 +755,28 @@ class ViewController: NSViewController {
                     return
                 }
 
-                self?.startQuickTimeConversion(inputFileURL: downloadedFileURL, ffmpegPath: ffmpegPath)
+                if shouldPreserveChapters {
+                    self?.appendLog("Checking downloaded file for chapters...\n")
+                    self?.verifyEmbeddedChapters(
+                        in: downloadedFileURL,
+                        ffprobePath: ffprobePath,
+                        isFinalFile: false
+                    ) {
+                        self?.startQuickTimeConversion(
+                            inputFileURL: downloadedFileURL,
+                            ffmpegPath: ffmpegPath,
+                            ffprobePath: ffprobePath,
+                            shouldPreserveChapters: true
+                        )
+                    }
+                } else {
+                    self?.startQuickTimeConversion(
+                        inputFileURL: downloadedFileURL,
+                        ffmpegPath: ffmpegPath,
+                        ffprobePath: ffprobePath,
+                        shouldPreserveChapters: false
+                    )
+                }
             }
         }
 
@@ -850,7 +896,12 @@ class ViewController: NSViewController {
         }
     }
 
-    func startQuickTimeConversion(inputFileURL: URL, ffmpegPath: String) {
+    func startQuickTimeConversion(
+        inputFileURL: URL,
+        ffmpegPath: String,
+        ffprobePath: String,
+        shouldPreserveChapters: Bool
+    ) {
         let outputFileURL = quickTimeOutputURL(for: inputFileURL)
 
         let process = Process()
@@ -866,6 +917,9 @@ class ViewController: NSViewController {
         ]
 
         appendLog("\nStarting QuickTime-compatible MP4 conversion...\n")
+        if shouldPreserveChapters {
+            appendLog("Preserving chapters during FFmpeg conversion.\n")
+        }
         // VLC can play many codecs that QuickTime cannot. This ffmpeg step converts
         // the finished video to H.264 video with AAC audio for better Apple compatibility.
         appendLog("Converting for Apple QuickTime compatibility using bundled ffmpeg.\n")
@@ -913,6 +967,15 @@ class ViewController: NSViewController {
                     self?.finishProgress(exitCode: 0)
                     self?.statusLabel.stringValue = "QuickTime MP4 ready: \(outputFileURL.lastPathComponent)"
                     self?.appendLog("QuickTime-compatible file ready: \(outputFileURL.path)\n")
+                    self?.appendLog("FFmpeg conversion completed.\n")
+                    if shouldPreserveChapters {
+                        self?.appendLog("Checking final file for chapters...\n")
+                        self?.verifyEmbeddedChapters(
+                            in: outputFileURL,
+                            ffprobePath: ffprobePath,
+                            isFinalFile: true
+                        )
+                    }
                 } else {
                     self?.statusLabel.stringValue = "Conversion ended with exit code \(finishedProcess.terminationStatus)"
                     self?.appendLog("Error: ffmpeg exited with non-zero status \(finishedProcess.terminationStatus).\n")
@@ -1108,14 +1171,93 @@ class ViewController: NSViewController {
             .joined(separator: " ")
     }
 
+    /// GUI applications do not inherit the interactive shell's PATH, so a Deno
+    /// installation in ~/.deno/bin is otherwise invisible to yt-dlp when the app
+    /// is launched from Xcode or Finder.
+    func availableDenoPath() -> String? {
+        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
+        let candidates = [
+            Bundle.main.path(forResource: "deno", ofType: nil),
+            homeDirectory.appendingPathComponent(".deno/bin/deno").path,
+            "/opt/homebrew/bin/deno",
+            "/usr/local/bin/deno",
+            "/usr/bin/deno"
+        ].compactMap { $0 }
+
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
     /// yt-dlp chapters are timestamped sections supplied by the video's publisher.
     /// `--embed-chapters` writes those markers into supported media containers, while
     /// `--write-info-json` saves the source metadata beside the download. Some videos
     /// simply do not publish chapters; yt-dlp still completes those downloads normally.
-    func chapterArguments() -> [String] {
-        preserveChaptersCheckbox.state == .on
+    func chapterArguments(preservingChapters: Bool) -> [String] {
+        preservingChapters
             ? ["--embed-chapters", "--write-info-json"]
             : []
+    }
+
+    private func verifyEmbeddedChapters(
+        in mediaURL: URL,
+        ffprobePath: String,
+        isFinalFile: Bool,
+        completion: (() -> Void)? = nil
+    ) {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let process = Process()
+            let outputPipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: ffprobePath)
+            process.arguments = [
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_chapters",
+                mediaURL.path
+            ]
+            process.standardOutput = outputPipe
+            process.standardError = Pipe()
+
+            var chapters: [[String: Any]] = []
+            var failureMessage: String?
+            do {
+                try process.run()
+                let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                if process.terminationStatus == 0,
+                   let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    chapters = root["chapters"] as? [[String: Any]] ?? []
+                } else {
+                    failureMessage = "ffprobe exited with status \(process.terminationStatus)."
+                }
+            } catch {
+                failureMessage = "ffprobe could not be launched: \(error.localizedDescription)"
+            }
+
+            let chapterLines = chapters.map { chapter -> String in
+                let start = Double(chapter["start_time"] as? String ?? "")
+                    ?? chapter["start_time"] as? Double
+                    ?? 0
+                let tags = chapter["tags"] as? [String: Any]
+                let title = tags?["title"] as? String ?? "Untitled chapter"
+                return "\(self?.chapterTimestamp(start) ?? "00:00") — \(title)"
+            }
+
+            DispatchQueue.main.async {
+                if let failureMessage {
+                    self?.appendLog("Warning: \(failureMessage)\n")
+                }
+                if isFinalFile {
+                    if chapterLines.isEmpty {
+                        self?.appendLog("Warning: No chapters were found in the final MP4.\n")
+                    } else {
+                        self?.appendLog("Embedded chapters verified: \(chapterLines.count) chapters\n")
+                        self?.appendLog("\(chapterLines.joined(separator: "\n"))\n")
+                    }
+                } else {
+                    self?.appendLog("Downloaded file contains \(chapterLines.count) embedded chapters before FFmpeg conversion.\n")
+                }
+                completion?()
+            }
+        }
     }
 
     private func inspectChapterMetadata(for mediaURL: URL?) {
