@@ -9,6 +9,10 @@ import Cocoa
 
 class ViewController: NSViewController {
 
+    private let defaultLaunchContentSize = NSSize(width: 900, height: 900)
+    private let minimumUsableContentSize = NSSize(width: 850, height: 860)
+    private var didConfigureLaunchWindow = false
+
     @IBOutlet weak var urlTextField: NSTextField!
     @IBOutlet weak var modePopupButton: NSPopUpButton!
     @IBOutlet weak var folderLabel: NSTextField!
@@ -34,9 +38,29 @@ class ViewController: NSViewController {
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        view.window?.title = "Video Downloader"
-        view.window?.minSize = NSSize(width: 880, height: 760)
+        configureLaunchWindowIfNeeded()
         view.window?.makeFirstResponder(urlTextField)
+    }
+
+    private func configureLaunchWindowIfNeeded() {
+        guard !didConfigureLaunchWindow, let window = view.window else { return }
+        didConfigureLaunchWindow = true
+
+        window.title = "Video Downloader"
+
+        // The interface is taller than the small storyboard placeholder window.
+        // contentMinSize keeps normal resizing available while preventing the
+        // controls from being hidden by an unusably small window.
+        window.contentMinSize = minimumUsableContentSize
+
+        // If macOS window restoration brings back an old tiny frame, replace it
+        // with a usable launch size. A larger user-saved size is left alone.
+        let currentContentSize = window.contentLayoutRect.size
+        if currentContentSize.width < minimumUsableContentSize.width ||
+            currentContentSize.height < minimumUsableContentSize.height {
+            window.setContentSize(defaultLaunchContentSize)
+            window.center()
+        }
     }
 
     func buildInterface() {
