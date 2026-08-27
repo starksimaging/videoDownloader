@@ -22,7 +22,7 @@ chmod +x "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/ffprobe"
 - The app passes the app bundle's Resources folder to yt-dlp using `--ffmpeg-location Bundle.main.resourcePath`, so yt-dlp can find both `ffmpeg` and `ffprobe`.
 - The app logs the resolved `yt-dlp`, `ffmpeg`, `ffprobe`, Resources path, selected output folder, and full yt-dlp arguments at the start of each download.
 - The app validates that all three bundled tools exist and are executable before it starts a download.
-- The QuickTime-friendly yt-dlp arguments are equivalent to:
+- The MP4 download and merge arguments are equivalent to:
 
 ```sh
 yt-dlp --ffmpeg-location "[resourcePath]" -f "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]" --merge-output-format mp4 -o "[selectedFolder]/%(title)s.%(ext)s" "[url]"

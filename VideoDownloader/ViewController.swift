@@ -696,7 +696,6 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                     folder: folder,
                     ytDLPURL: executableURL,
                     resourcePath: resourcePath,
-                    ffmpegPath: ffmpegPath,
                     ffprobePath: ffprobePath,
                     shouldPreserveChapters: shouldPreserveChapters
                 )
@@ -712,7 +711,6 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         folder: URL,
         ytDLPURL: URL,
         resourcePath: String,
-        ffmpegPath: String,
         ffprobePath: String,
         shouldPreserveChapters: Bool
     ) {
@@ -754,7 +752,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             appendLog("Video MP4 mode selected.\n")
 
             arguments += [
-                // Prefer QuickTime-compatible MP4 video with M4A audio.
+                // Prefer MP4 video with M4A audio and let yt-dlp perform any required merge.
                 // Static ffmpeg and ffprobe builds are required so the app works on Macs without Homebrew.
                 "--ffmpeg-location", resourcePath,
                 "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
@@ -826,30 +824,21 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
                 guard let downloadedFileURL = self?.lastDownloadedFileURL else {
                     self?.finishProgress(exitCode: 1)
-                    self?.appendLog("Error: yt-dlp finished, but the downloaded file could not be found for QuickTime conversion.\n")
+                    self?.appendLog("Error: yt-dlp finished, but the downloaded MP4 could not be found.\n")
                     return
                 }
 
+                self?.lastDownloadedFileURL = downloadedFileURL
+                self?.revealButton.isEnabled = true
+                self?.finishProgress(exitCode: 0)
+                self?.statusLabel.stringValue = "Download complete: \(downloadedFileURL.lastPathComponent)"
+                self?.appendLog("Download complete: \(downloadedFileURL.path)\n")
+
                 if shouldPreserveChapters {
-                    self?.appendLog("Checking downloaded file for chapters...\n")
+                    self?.appendLog("Checking final MP4 for embedded chapters...\n")
                     self?.verifyEmbeddedChapters(
                         in: downloadedFileURL,
-                        ffprobePath: ffprobePath,
-                        isFinalFile: false
-                    ) {
-                        self?.startQuickTimeConversion(
-                            inputFileURL: downloadedFileURL,
-                            ffmpegPath: ffmpegPath,
-                            ffprobePath: ffprobePath,
-                            shouldPreserveChapters: true
-                        )
-                    }
-                } else {
-                    self?.startQuickTimeConversion(
-                        inputFileURL: downloadedFileURL,
-                        ffmpegPath: ffmpegPath,
-                        ffprobePath: ffprobePath,
-                        shouldPreserveChapters: false
+                        ffprobePath: ffprobePath
                     )
                 }
             }
@@ -885,7 +874,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
     @objc private func checkForYTDLPUpdatesClicked(_ sender: NSButton) {
         guard currentProcess == nil else {
-            appendLog("Wait for the current download or conversion to finish before updating yt-dlp.\n")
+            appendLog("Wait for the current download to finish before updating yt-dlp.\n")
             return
         }
         runYTDLPUpdate(manual: true)
@@ -951,7 +940,16 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     func handleProcessOutput(_ text: String) {
         appendLog(text)
         updateProgress(from: text)
+        updatePostProcessingStatus(from: text)
         updateDownloadedFile(from: text)
+    }
+
+    func updatePostProcessingStatus(from text: String) {
+        if text.contains("[Merger]") {
+            statusLabel.stringValue = "Merging video and audio..."
+        } else if text.contains("[EmbedChapters]") || text.localizedCaseInsensitiveContains("embedding chapters") {
+            statusLabel.stringValue = "Embedding chapters..."
+        }
     }
 
     func resetProgress() {
@@ -965,124 +963,10 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     func finishProgress(exitCode: Int32) {
         if exitCode == 0 {
             progressIndicator.doubleValue = 100
-            statusLabel.stringValue = "Download and conversion complete"
+            statusLabel.stringValue = "Download complete"
         } else {
             statusLabel.stringValue = "Download ended with exit code \(exitCode)"
         }
-    }
-
-    func startQuickTimeConversion(
-        inputFileURL: URL,
-        ffmpegPath: String,
-        ffprobePath: String,
-        shouldPreserveChapters: Bool
-    ) {
-        let outputFileURL = quickTimeOutputURL(for: inputFileURL)
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: ffmpegPath)
-        process.arguments = [
-            "-i", inputFileURL.path,
-            // Carry global metadata and chapter tables from yt-dlp's MP4 into the converted MP4.
-            "-map_metadata", "0",
-            "-map_chapters", "0",
-            "-c:v", "libx264",
-            "-c:a", "aac",
-            outputFileURL.path
-        ]
-
-        appendLog("\nStarting QuickTime-compatible MP4 conversion...\n")
-        if shouldPreserveChapters {
-            appendLog("Preserving chapters during FFmpeg conversion.\n")
-        }
-        // VLC can play many codecs that QuickTime cannot. This ffmpeg step converts
-        // the finished video to H.264 video with AAC audio for better Apple compatibility.
-        appendLog("Converting for Apple QuickTime compatibility using bundled ffmpeg.\n")
-        appendLog("Input file: \(inputFileURL.path)\n")
-        appendLog("Output file: \(outputFileURL.path)\n")
-        appendLog("Full ffmpeg arguments:\n\(formattedArguments(process.arguments ?? []))\n\n")
-
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
-        outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-
-            if let output = String(data: data, encoding: .utf8) {
-                DispatchQueue.main.async {
-                    self?.appendLog(output)
-                }
-            }
-        }
-
-        errorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-
-            if let output = String(data: data, encoding: .utf8) {
-                DispatchQueue.main.async {
-                    self?.appendLog(output)
-                }
-            }
-        }
-
-        process.terminationHandler = { [weak self] finishedProcess in
-            DispatchQueue.main.async {
-                outputPipe.fileHandleForReading.readabilityHandler = nil
-                errorPipe.fileHandleForReading.readabilityHandler = nil
-                self?.currentProcess = nil
-                self?.appendLog("\nffmpeg finished with exit code \(finishedProcess.terminationStatus).\n")
-
-                if finishedProcess.terminationStatus == 0 {
-                    self?.lastDownloadedFileURL = outputFileURL
-                    self?.revealButton.isEnabled = true
-                    self?.finishProgress(exitCode: 0)
-                    self?.statusLabel.stringValue = "QuickTime MP4 ready: \(outputFileURL.lastPathComponent)"
-                    self?.appendLog("QuickTime-compatible file ready: \(outputFileURL.path)\n")
-                    self?.appendLog("FFmpeg conversion completed.\n")
-                    if shouldPreserveChapters {
-                        self?.appendLog("Checking final file for chapters...\n")
-                        self?.verifyEmbeddedChapters(
-                            in: outputFileURL,
-                            ffprobePath: ffprobePath,
-                            isFinalFile: true
-                        )
-                    }
-                } else {
-                    self?.statusLabel.stringValue = "Conversion ended with exit code \(finishedProcess.terminationStatus)"
-                    self?.appendLog("Error: ffmpeg exited with non-zero status \(finishedProcess.terminationStatus).\n")
-                }
-            }
-        }
-
-        do {
-            statusLabel.stringValue = "Converting for QuickTime..."
-            currentProcess = process
-            try process.run()
-        } catch {
-            currentProcess = nil
-            outputPipe.fileHandleForReading.readabilityHandler = nil
-            errorPipe.fileHandleForReading.readabilityHandler = nil
-            appendLog("Error running ffmpeg: \(error)\n")
-            statusLabel.stringValue = "Conversion failed"
-        }
-    }
-
-    func quickTimeOutputURL(for inputFileURL: URL) -> URL {
-        let folderURL = inputFileURL.deletingLastPathComponent()
-        let baseName = inputFileURL.deletingPathExtension().lastPathComponent
-        var outputURL = folderURL.appendingPathComponent("\(baseName)_quicktime.mp4")
-        var copyNumber = 2
-
-        while FileManager.default.fileExists(atPath: outputURL.path) {
-            outputURL = folderURL.appendingPathComponent("\(baseName)_quicktime_\(copyNumber).mp4")
-            copyNumber += 1
-        }
-
-        return outputURL
     }
 
     func updateProgress(from text: String) {
@@ -1398,9 +1282,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
     private func verifyEmbeddedChapters(
         in mediaURL: URL,
-        ffprobePath: String,
-        isFinalFile: Bool,
-        completion: (() -> Void)? = nil
+        ffprobePath: String
     ) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let process = Process()
@@ -1444,17 +1326,12 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                 if let failureMessage {
                     self?.appendLog("Warning: \(failureMessage)\n")
                 }
-                if isFinalFile {
-                    if chapterLines.isEmpty {
-                        self?.appendLog("Warning: No chapters were found in the final MP4.\n")
-                    } else {
-                        self?.appendLog("Embedded chapters verified: \(chapterLines.count) chapters\n")
-                        self?.appendLog("\(chapterLines.joined(separator: "\n"))\n")
-                    }
+                if chapterLines.isEmpty {
+                    self?.appendLog("Warning: No chapters were found in the final MP4.\n")
                 } else {
-                    self?.appendLog("Downloaded file contains \(chapterLines.count) embedded chapters before FFmpeg conversion.\n")
+                    self?.appendLog("Embedded chapters verified: \(chapterLines.count) chapters\n")
+                    self?.appendLog("\(chapterLines.joined(separator: "\n"))\n")
                 }
-                completion?()
             }
         }
     }

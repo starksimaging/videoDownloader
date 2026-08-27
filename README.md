@@ -10,8 +10,8 @@ The current interface uses a dark cinematic background, a translucent glass-styl
 
 - Download video as MP4.
 - Download audio only as MP3.
-- Convert finished video downloads to a QuickTime-compatible MP4.
-- Reveal the downloaded or converted file in Finder.
+- Let `yt-dlp` and bundled `ffmpeg` merge requested streams into the final MP4.
+- Reveal the final downloaded file in Finder.
 - Show download progress and command output in the app log.
 - Automatically install and update a writable copy of bundled `yt-dlp`.
 - Choose the Stable or Nightly `yt-dlp` update channel.
@@ -59,19 +59,15 @@ If the asset is missing, the app falls back to a dark gradient background so the
 
 Video mode uses the app-managed writable `yt-dlp` with bundled `ffmpeg` and `ffprobe`.
 
-After `yt-dlp` finishes, the app runs bundled `ffmpeg` again to create a QuickTime-friendly file:
+`yt-dlp` selects MP4 video and M4A audio when available and uses the bundled
+`ffmpeg` to merge separate streams when needed:
 
 ```sh
-ffmpeg -i inputFile -c:v libx264 -c:a aac outputFile
+yt-dlp --ffmpeg-location "[resourcePath]" -f "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]" --merge-output-format mp4 -o "[selectedFolder]/%(title)s.%(ext)s" "[url]"
 ```
 
-The converted file is named with `_quicktime` before `.mp4`, for example:
-
-```text
-Example Video_quicktime.mp4
-```
-
-This extra conversion is useful because VLC can play many codecs that QuickTime cannot. Converting to H.264 video and AAC audio improves compatibility with Apple apps.
+The MP4 produced by yt-dlp is the final file. The app does not perform a second
+transcode or create an additional compatibility copy.
 
 ### Audio Only MP3
 
