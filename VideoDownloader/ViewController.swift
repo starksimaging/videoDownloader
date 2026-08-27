@@ -7,10 +7,10 @@
 
 import Cocoa
 
-class ViewController: NSViewController {
+class ViewController: NSViewController, NSTextFieldDelegate {
 
-    private let defaultLaunchContentSize = NSSize(width: 900, height: 900)
-    private let minimumUsableContentSize = NSSize(width: 850, height: 860)
+    private let defaultLaunchContentSize = NSSize(width: 900, height: 1000)
+    private let minimumUsableContentSize = NSSize(width: 850, height: 960)
     private var didConfigureLaunchWindow = false
 
     @IBOutlet weak var urlTextField: NSTextField!
@@ -18,6 +18,8 @@ class ViewController: NSViewController {
     @IBOutlet weak var folderLabel: NSTextField!
     @IBOutlet var logTextView: NSTextView!
     @IBOutlet weak var preserveChaptersCheckbox: NSButton!
+    @IBOutlet weak var videoTitleLabel: NSTextField!
+    @IBOutlet weak var videoUploaderLabel: NSTextField!
 
     var progressIndicator: NSProgressIndicator!
     var statusLabel: NSTextField!
@@ -30,6 +32,11 @@ class ViewController: NSViewController {
     var lastDownloadedFileURL: URL?
     var downloadStartDate: Date?
     var currentProcess: Process?
+    private var metadataProcess: Process?
+    private var metadataWorkItem: DispatchWorkItem?
+    private var metadataURL: String?
+    private var metadataTitle: String?
+    private var videoInformationView: NSView!
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -100,12 +107,18 @@ class ViewController: NSViewController {
         let subtitleLabel = makeLabel("Download videos and audio from your favorite websites", size: 15, weight: .regular, color: NSColor.white.withAlphaComponent(0.84), alignment: .center)
 
         let urlField = makeInputField(placeholder: "https://www.youtube.com/watch?v=...")
+        urlField.delegate = self
         let urlRow = makeInputRow(
             symbolName: "link",
             title: "Video URL",
             subtitle: "Enter the video URL",
             trailingView: urlField
         )
+
+        let headlineLabel = makeVideoTitleLabel()
+        let uploaderLabel = makeLabel("", size: 14, weight: .regular, color: .secondaryLabelColor, alignment: .left)
+        let informationCard = makeVideoInformationCard(titleLabel: headlineLabel, uploaderLabel: uploaderLabel)
+        informationCard.isHidden = true
 
         let pathLabel = makeValueLabel("No folder selected")
         let chooseButton = makeSecondaryButton(title: "Choose Folder", action: #selector(chooseFolderClicked(_:)))
@@ -215,7 +228,7 @@ class ViewController: NSViewController {
         ])
         footerRow.distribution = .fillEqually
 
-        [appIcon, titleLabel, subtitleLabel, urlRow, folderRow, selectorRow, chaptersCard, downloadButton, statusPanel, footerRow].forEach {
+        [appIcon, titleLabel, subtitleLabel, urlRow, informationCard, folderRow, selectorRow, chaptersCard, downloadButton, statusPanel, footerRow].forEach {
             stack.addArrangedSubview($0)
         }
 
@@ -228,6 +241,9 @@ class ViewController: NSViewController {
         modePopupButton = modePopup
         qualityPopupButton = qualityPopup
         preserveChaptersCheckbox = chaptersCheckbox
+        videoTitleLabel = headlineLabel
+        videoUploaderLabel = uploaderLabel
+        videoInformationView = informationCard
         folderLabel = pathLabel
         logTextView = textView
         progressIndicator = progressBar
@@ -269,6 +285,7 @@ class ViewController: NSViewController {
             appIcon.heightAnchor.constraint(equalToConstant: 88),
 
             urlRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            informationCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             folderRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             selectorRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             chaptersCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -291,6 +308,41 @@ class ViewController: NSViewController {
         ])
 
         prepareYTDLPAndCheckForUpdates()
+    }
+
+    private func makeVideoTitleLabel() -> NSTextField {
+        let label = makeLabel("", size: 28, weight: .semibold, color: .labelColor, alignment: .left)
+        label.maximumNumberOfLines = 2
+        label.lineBreakMode = .byTruncatingTail
+        label.cell?.wraps = true
+        label.cell?.truncatesLastVisibleLine = true
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return label
+    }
+
+    private func makeVideoInformationCard(titleLabel: NSTextField, uploaderLabel: NSTextField) -> NSView {
+        let card = RoundedPanelView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.fillColor = NSColor.controlBackgroundColor.withAlphaComponent(0.46)
+        card.borderColor = NSColor.separatorColor.withAlphaComponent(0.38)
+        card.cornerRadius = 13
+
+        let copyStack = NSStackView(views: [titleLabel, uploaderLabel])
+        copyStack.translatesAutoresizingMaskIntoConstraints = false
+        copyStack.orientation = .vertical
+        copyStack.alignment = .leading
+        copyStack.spacing = 6
+        card.addSubview(copyStack)
+
+        NSLayoutConstraint.activate([
+            copyStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 16),
+            copyStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
+            copyStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
+            copyStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16),
+            titleLabel.widthAnchor.constraint(equalTo: copyStack.widthAnchor),
+            uploaderLabel.widthAnchor.constraint(equalTo: copyStack.widthAnchor)
+        ])
+        return card
     }
 
     func makeAppIconView() -> NSView {
@@ -580,6 +632,11 @@ class ViewController: NSViewController {
             return
         }
 
+        // Do not refetch metadata that was already resolved for this URL.
+        if metadataURL != url {
+            fetchVideoMetadata(for: url)
+        }
+
         guard let folder = selectedFolder else {
             appendLog("Please choose a download folder.\n")
             return
@@ -669,13 +726,7 @@ class ViewController: NSViewController {
         process.executableURL = ytDLPURL
 
         var arguments = ["--newline", "--print", "after_move:filepath"]
-
-        if let denoPath = availableDenoPath() {
-            arguments += ["--js-runtimes", "deno:\(denoPath)"]
-            appendLog("Deno JavaScript runtime enabled: \(denoPath)\n")
-        } else {
-            appendLog("Warning: Deno was not found. YouTube may reject some media requests.\n")
-        }
+        arguments += ytDLPConfigurationArguments(logRuntimeStatus: true)
 
         if shouldPreserveChapters {
             appendLog("Chapter preservation enabled.\n")
@@ -1169,6 +1220,115 @@ class ViewController: NSViewController {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    func controlTextDidChange(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField, field === urlTextField else { return }
+        let url = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard url != metadataURL else { return }
+        clearVideoMetadata()
+        metadataWorkItem?.cancel()
+        if metadataProcess?.isRunning == true {
+            metadataProcess?.terminate()
+        }
+        metadataProcess = nil
+
+        guard isValidMetadataURL(url) else { return }
+        let workItem = DispatchWorkItem { [weak self] in self?.fetchVideoMetadata(for: url) }
+        metadataWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.65, execute: workItem)
+    }
+
+    private func isValidMetadataURL(_ value: String) -> Bool {
+        guard let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.host != nil else { return false }
+        return true
+    }
+
+    private func clearVideoMetadata() {
+        metadataURL = nil
+        metadataTitle = nil
+        videoTitleLabel.stringValue = ""
+        videoTitleLabel.toolTip = nil
+        videoUploaderLabel.stringValue = ""
+        videoInformationView.isHidden = true
+    }
+
+    private func fetchVideoMetadata(for url: String) {
+        guard isValidMetadataURL(url), metadataURL != url else { return }
+        metadataURL = url
+        appendLog("Retrieving video information…\n")
+
+        YTDLPManager.shared.executableURL(log: { [weak self] in self?.appendLog($0) }) { [weak self] result in
+            guard let self, self.metadataURL == url else { return }
+            switch result {
+            case .failure(let error):
+                self.metadataURL = nil
+                self.appendLog("Could not retrieve video information: \(error.localizedDescription)\n")
+            case .success(let executableURL):
+                self.runMetadataExtraction(for: url, executableURL: executableURL)
+            }
+        }
+    }
+
+    private func runMetadataExtraction(for url: String, executableURL: URL) {
+        let process = Process()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.executableURL = executableURL
+        process.arguments = ytDLPConfigurationArguments(logRuntimeStatus: false) + [
+            "--skip-download",
+            "--no-playlist",
+            "--dump-single-json",
+            url
+        ]
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        metadataProcess = process
+
+        DispatchQueue.global(qos: .utility).async { [weak self, weak process] in
+            guard let self, let process else { return }
+            do {
+                try process.run()
+                let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                let errorText = String(data: errorData, encoding: .utf8) ?? ""
+
+                DispatchQueue.main.async {
+                    guard self.metadataURL == url else { return }
+                    self.metadataProcess = nil
+                    guard process.terminationStatus == 0,
+                          let object = try? JSONSerialization.jsonObject(with: outputData) as? [String: Any],
+                          let title = object["title"] as? String,
+                          !title.isEmpty else {
+                        self.metadataURL = nil
+                        self.appendLog("Could not retrieve video information. \(errorText.trimmingCharacters(in: .whitespacesAndNewlines))\n")
+                        return
+                    }
+
+                    let uploader = (object["channel"] as? String)
+                        ?? (object["uploader"] as? String)
+                        ?? "Unknown channel"
+                    self.metadataTitle = title
+                    self.videoTitleLabel.stringValue = title
+                    self.videoTitleLabel.toolTip = title
+                    self.videoUploaderLabel.stringValue = uploader
+                    self.videoInformationView.isHidden = false
+                    self.appendLog("Video information loaded: \(title) — \(uploader)\n")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard self.metadataURL == url else { return }
+                    self.metadataProcess = nil
+                    self.metadataURL = nil
+                    self.appendLog("Could not launch yt-dlp for video information: \(error.localizedDescription)\n")
+                }
+            }
+        }
+    }
+
     func validateExecutable(path: String, name: String) -> Bool {
         let fileManager = FileManager.default
 
@@ -1209,6 +1369,21 @@ class ViewController: NSViewController {
         ].compactMap { $0 }
 
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// Metadata inspection and downloads share these arguments so JavaScript/EJS
+    /// extraction behavior and yt-dlp's normal config/cookie handling stay identical.
+    func ytDLPConfigurationArguments(logRuntimeStatus: Bool) -> [String] {
+        guard let denoPath = availableDenoPath() else {
+            if logRuntimeStatus {
+                appendLog("Warning: Deno was not found. YouTube may reject some media requests.\n")
+            }
+            return []
+        }
+        if logRuntimeStatus {
+            appendLog("Deno JavaScript runtime enabled: \(denoPath)\n")
+        }
+        return ["--js-runtimes", "deno:\(denoPath)"]
     }
 
     /// yt-dlp chapters are timestamped sections supplied by the video's publisher.

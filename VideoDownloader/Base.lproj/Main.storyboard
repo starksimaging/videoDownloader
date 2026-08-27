@@ -707,7 +707,7 @@
             <objects>
                 <viewController id="XfG-lQ-9wD" customClass="ViewController" customModule="VideoDownloader" customModuleProvider="target" sceneMemberID="viewController">
                     <view key="view" id="m2S-Jp-Qdl">
-                        <rect key="frame" x="0.0" y="0.0" width="900" height="900"/>
+                        <rect key="frame" x="0.0" y="0.0" width="900" height="1000"/>
                         <autoresizingMask key="autoresizingMask"/>
                         <subviews>
                             <textField focusRingType="none" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="url-TF-001">
@@ -716,6 +716,22 @@
                                     <font key="font" metaFont="system"/>
                                     <color key="textColor" name="controlTextColor" catalog="System" colorSpace="catalog"/>
                                     <color key="backgroundColor" name="textBackgroundColor" catalog="System" colorSpace="catalog"/>
+                                </textFieldCell>
+                            </textField>
+                            <textField hidden="YES" focusRingType="none" id="video-title-LBL-001">
+                                <rect key="frame" x="20" y="190" width="440" height="58"/>
+                                <textFieldCell key="cell" lineBreakMode="truncatingTail" title="" id="video-title-LBL-cell">
+                                    <font key="font" size="28" name=".AppleSystemUIFontSemibold"/>
+                                    <color key="textColor" name="labelColor" catalog="System" colorSpace="catalog"/>
+                                    <color key="backgroundColor" name="controlColor" catalog="System" colorSpace="catalog"/>
+                                </textFieldCell>
+                            </textField>
+                            <textField hidden="YES" focusRingType="none" id="video-uploader-LBL-001">
+                                <rect key="frame" x="20" y="170" width="440" height="17"/>
+                                <textFieldCell key="cell" lineBreakMode="truncatingTail" title="" id="video-uploader-LBL-cell">
+                                    <font key="font" metaFont="system" size="14"/>
+                                    <color key="textColor" name="secondaryLabelColor" catalog="System" colorSpace="catalog"/>
+                                    <color key="backgroundColor" name="controlColor" catalog="System" colorSpace="catalog"/>
                                 </textFieldCell>
                             </textField>
                             <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="choose-BTN-001">
@@ -815,6 +831,8 @@
                         <outlet property="logTextView" destination="log-TV-001" id="log-outlet-001"/>
                         <outlet property="preserveChaptersCheckbox" destination="chapters-CB-001" id="chapters-outlet-001"/>
                         <outlet property="urlTextField" destination="url-TF-001" id="url-outlet-001"/>
+                        <outlet property="videoTitleLabel" destination="video-title-LBL-001" id="video-title-outlet-001"/>
+                        <outlet property="videoUploaderLabel" destination="video-uploader-LBL-001" id="video-uploader-outlet-001"/>
                     </connections>
                 </viewController>
                 <customObject id="rPt-NT-nkU" userLabel="First Responder" customClass="NSResponder" sceneMemberID="firstResponder"/>
