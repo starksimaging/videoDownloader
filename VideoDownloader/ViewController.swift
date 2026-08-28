@@ -31,6 +31,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     var ytDLPChannelPopup: NSPopUpButton!
     var ytDLPVersionLabel: NSTextField!
     var downloadButton: NSButton!
+    var saveTranscriptCheckbox: NSButton!
     var selectedFolder: URL?
     var lastDownloadedFileURL: URL?
     var downloadStartDate: Date?
@@ -160,11 +161,19 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         chaptersCheckbox.contentTintColor = .white
         chaptersCheckbox.toolTip = "Embed available yt-dlp chapter markers and save the video metadata"
 
+        let transcriptCheckbox = NSButton(checkboxWithTitle: "Save Transcript", target: nil, action: nil)
+        transcriptCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        transcriptCheckbox.state = .off
+        transcriptCheckbox.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        transcriptCheckbox.contentTintColor = .white
+        transcriptCheckbox.toolTip = "Save available English captions as a plain-text transcript"
+        let companionOptions = makeHorizontalStack(spacing: 18, views: [chaptersCheckbox, transcriptCheckbox])
+
         let chaptersCard = makeInputRow(
             symbolName: "list.bullet.rectangle",
             title: "Chapter Markers",
             subtitle: "Keep chapters when the source provides them",
-            trailingView: chaptersCheckbox
+            trailingView: companionOptions
         )
 
         let downloadButton = GradientButton(title: "Download", target: self, action: #selector(downloadClicked(_:)))
@@ -249,6 +258,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         modePopupButton = modePopup
         qualityPopupButton = qualityPopup
         preserveChaptersCheckbox = chaptersCheckbox
+        saveTranscriptCheckbox = transcriptCheckbox
         videoTitleLabel = headlineLabel
         videoUploaderLabel = uploaderLabel
         videoInformationView = informationCard
@@ -675,6 +685,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         // Preparing/updating the writable yt-dlp executable is asynchronous, so the
         // rest of this download must not re-read a UI control that may change later.
         let shouldPreserveChapters = preserveChaptersCheckbox.state == .on
+        let shouldSaveTranscript = saveTranscriptCheckbox.state == .on
 
         // This app uses helper programs bundled inside the app, not Homebrew.
         // Homebrew paths such as /opt/homebrew/bin/ffmpeg should not be used for distribution.
@@ -721,7 +732,8 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                     ytDLPURL: executableURL,
                     resourcePath: resourcePath,
                     ffprobePath: ffprobePath,
-                    shouldPreserveChapters: shouldPreserveChapters
+                    shouldPreserveChapters: shouldPreserveChapters,
+                    shouldSaveTranscript: shouldSaveTranscript
                 )
             case .failure(let error):
                 self.statusLabel.stringValue = "yt-dlp unavailable"
@@ -736,7 +748,8 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         ytDLPURL: URL,
         resourcePath: String,
         ffprobePath: String,
-        shouldPreserveChapters: Bool
+        shouldPreserveChapters: Bool,
+        shouldSaveTranscript: Bool
     ) {
         appendLog("yt-dlp path: \(ytDLPURL.path)\n")
         appendLog("Selected output folder: \(folder.path)\n")
@@ -746,6 +759,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         let isAudioOnlyMode = modePopupButton.titleOfSelectedItem == "Audio Only MP3"
         let process = Process()
         process.executableURL = ytDLPURL
+        let existingSubtitleFiles = TranscriptProcessor.subtitleFiles(in: folder)
 
         var arguments = [
             "--newline",
@@ -753,6 +767,17 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             "--print", "after_move:filepath"
         ]
         arguments += ytDLPConfigurationArguments(logRuntimeStatus: true)
+
+        if shouldSaveTranscript {
+            appendLog("Transcript requested.\n")
+            appendLog("Requesting manually created English subtitles; auto-generated English captions will be used as fallback.\n")
+            arguments += [
+                "--write-subs",
+                "--write-auto-subs",
+                "--sub-langs", "en.*",
+                "--sub-format", "vtt"
+            ]
+        }
 
         if shouldPreserveChapters {
             appendLog("Chapter preservation enabled.\n")
@@ -835,6 +860,10 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                 self?.appendLog("\nyt-dlp finished with exit code \(finishedProcess.terminationStatus).\n")
 
                 if self?.cancellationRequested == true {
+                    if shouldSaveTranscript {
+                        let created = TranscriptProcessor.newlyCreatedSubtitleFiles(in: folder, excluding: existingSubtitleFiles)
+                        TranscriptProcessor.removeCreatedSubtitleFiles(created)
+                    }
                     self?.statusLabel.stringValue = "Cancelled"
                     self?.progressDetailsLabel.stringValue = ""
                     self?.appendLog("Download cancelled.\n")
@@ -858,6 +887,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                     self?.completeProgress()
                     self?.statusLabel.stringValue = "Audio MP3 download complete"
                     self?.appendLog("Audio Only MP3 download complete.\n")
+                    if shouldSaveTranscript { self?.createTranscript(in: folder, excluding: existingSubtitleFiles) }
                     return
                 }
 
@@ -872,6 +902,8 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                 self?.finishProgress(exitCode: 0)
                 self?.statusLabel.stringValue = "Download complete: \(downloadedFileURL.lastPathComponent)"
                 self?.appendLog("Download complete: \(downloadedFileURL.path)\n")
+
+                if shouldSaveTranscript { self?.createTranscript(in: folder, excluding: existingSubtitleFiles) }
 
                 if shouldPreserveChapters {
                     self?.appendLog("Checking final MP4 for embedded chapters...\n")
@@ -993,6 +1025,9 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             return
         }
         appendLog(line + "\n")
+        if line.localizedCaseInsensitiveContains("subtitles") || line.localizedCaseInsensitiveContains("captions") {
+            statusLabel.stringValue = "Retrieving transcript…"
+        }
         updatePostProcessingStatus(from: line)
         updateDownloadedFile(from: line)
     }
@@ -1073,6 +1108,35 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         return hours > 0
             ? String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
             : String(format: "%02d:%02d", minutes, remainingSeconds)
+    }
+
+    private func createTranscript(in folder: URL, excluding existingFiles: Set<URL>) {
+        let candidates = TranscriptProcessor.newlyCreatedSubtitleFiles(in: folder, excluding: existingFiles)
+        guard let subtitleURL = TranscriptProcessor.bestSubtitle(from: candidates, matching: lastDownloadedFileURL),
+              let mediaURL = lastDownloadedFileURL else {
+            statusLabel.stringValue = "Download complete — no transcript available"
+            appendLog("No English transcript available for this video.\n")
+            return
+        }
+
+        statusLabel.stringValue = "Creating transcript…"
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            do {
+                let transcriptURL = try TranscriptProcessor.createTranscript(from: subtitleURL, beside: mediaURL)
+                TranscriptProcessor.removeCreatedSubtitleFiles(candidates)
+                DispatchQueue.main.async {
+                    guard self?.cancellationRequested != true else { return }
+                    self?.statusLabel.stringValue = "Transcript saved."
+                    self?.appendLog("Transcript saved: \(transcriptURL.path)\n")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.statusLabel.stringValue = "Download complete — transcript unavailable"
+                    self?.appendLog("Transcript could not be created: \(error.localizedDescription)\n")
+                    self?.appendLog("Preserved subtitle file for troubleshooting: \(subtitleURL.path)\n")
+                }
+            }
+        }
     }
 
     func updateDownloadedFile(from text: String) {
