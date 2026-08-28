@@ -23,11 +23,14 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
     var progressIndicator: NSProgressIndicator!
     var statusLabel: NSTextField!
+    var progressPercentageLabel: NSTextField!
+    var progressDetailsLabel: NSTextField!
     var revealButton: NSButton!
     var qualityPopupButton: NSPopUpButton!
     var ytDLPUpdateButton: NSButton!
     var ytDLPChannelPopup: NSPopUpButton!
     var ytDLPVersionLabel: NSTextField!
+    var downloadButton: NSButton!
     var selectedFolder: URL?
     var lastDownloadedFileURL: URL?
     var downloadStartDate: Date?
@@ -37,6 +40,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     private var metadataURL: String?
     private var metadataTitle: String?
     private var videoInformationView: NSView!
+    private var cancellationRequested = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -180,6 +184,10 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         let progressLabel = makeLabel("Ready to download", size: 14, weight: .semibold, color: .white, alignment: .left)
         progressLabel.lineBreakMode = .byTruncatingMiddle
 
+        let percentageLabel = makeLabel("0%", size: 13, weight: .semibold, color: .white, alignment: .right)
+        percentageLabel.setContentHuggingPriority(.required, for: .horizontal)
+        let progressRow = makeHorizontalStack(spacing: 12, views: [progressBar, percentageLabel])
+        progressBar.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let statusSubtitle = makeLabel("Enter a URL and click Download to start.", size: 12, weight: .regular, color: NSColor.white.withAlphaComponent(0.66), alignment: .left)
 
         let clearButton = makePlainIconButton(title: "Clear Log", symbolName: "xmark.circle", action: #selector(clearLogClicked(_:)))
@@ -193,7 +201,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         channelPopup.toolTip = "Choose the yt-dlp update channel"
         let versionLabel = makeLabel("yt-dlp: preparing…", size: 11, weight: .regular, color: NSColor.white.withAlphaComponent(0.66), alignment: .left)
 
-        let statusCopy = NSStackView(views: [progressLabel, statusSubtitle, progressBar])
+        let statusCopy = NSStackView(views: [progressLabel, progressRow, statusSubtitle])
         statusCopy.translatesAutoresizingMaskIntoConstraints = false
         statusCopy.orientation = .vertical
         statusCopy.alignment = .leading
@@ -248,10 +256,13 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         logTextView = textView
         progressIndicator = progressBar
         statusLabel = progressLabel
+        progressPercentageLabel = percentageLabel
+        progressDetailsLabel = statusSubtitle
         revealButton = finderButton
         ytDLPUpdateButton = updateButton
         ytDLPChannelPopup = channelPopup
         ytDLPVersionLabel = versionLabel
+        self.downloadButton = downloadButton
         statusCopy.insertArrangedSubview(versionLabel, at: 2)
 
         let panelWidth = panel.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.66)
@@ -303,6 +314,9 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             statusStack.trailingAnchor.constraint(equalTo: statusPanel.trailingAnchor, constant: -18),
             statusStack.bottomAnchor.constraint(equalTo: statusPanel.bottomAnchor, constant: -16),
             statusTopRow.widthAnchor.constraint(equalTo: statusStack.widthAnchor),
+            progressRow.widthAnchor.constraint(equalTo: statusCopy.widthAnchor),
+            progressBar.heightAnchor.constraint(equalToConstant: 8),
+            percentageLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 48),
             scrollView.widthAnchor.constraint(equalTo: statusStack.widthAnchor),
             scrollView.heightAnchor.constraint(equalToConstant: 76)
         ])
@@ -622,6 +636,16 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     }
 
     @IBAction func downloadClicked(_ sender: NSButton) {
+        if let process = currentProcess, process.isRunning {
+            cancellationRequested = true
+            process.terminate()
+            sender.isEnabled = false
+            statusLabel.stringValue = "Cancelled"
+            progressDetailsLabel.stringValue = ""
+            appendLog("Cancelling download…\n")
+            return
+        }
+
         // If the URL field is still being edited, AppKit may keep the newest text
         // in a temporary field editor. Read from that editor first, then fall back
         // to the text field's stored value.
@@ -723,7 +747,11 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         let process = Process()
         process.executableURL = ytDLPURL
 
-        var arguments = ["--newline", "--print", "after_move:filepath"]
+        var arguments = [
+            "--newline",
+            "--progress-template", YTDLPProgress.template,
+            "--print", "after_move:filepath"
+        ]
         arguments += ytDLPConfigurationArguments(logRuntimeStatus: true)
 
         if shouldPreserveChapters {
@@ -769,18 +797,18 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()
+        let outputBuffer = NewlineRecordBuffer()
+        let errorBuffer = NewlineRecordBuffer()
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
-        // Read yt-dlp's normal output and error output as it runs, without freezing the UI.
+        // FileHandle callbacks deliver arbitrary chunks, so buffer until complete newline records exist.
         outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
-
-            if let output = String(data: data, encoding: .utf8) {
-                DispatchQueue.main.async {
-                    self?.handleProcessOutput(output)
-                }
+            let lines = outputBuffer.append(data)
+            DispatchQueue.main.async {
+                lines.forEach { self?.handleProcessOutputLine($0) }
             }
         }
 
@@ -788,10 +816,9 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             let data = handle.availableData
             guard !data.isEmpty else { return }
 
-            if let output = String(data: data, encoding: .utf8) {
-                DispatchQueue.main.async {
-                    self?.handleProcessOutput(output)
-                }
+            let lines = errorBuffer.append(data)
+            DispatchQueue.main.async {
+                lines.forEach { self?.handleProcessOutputLine($0) }
             }
         }
 
@@ -799,9 +826,21 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             DispatchQueue.main.async {
                 outputPipe.fileHandleForReading.readabilityHandler = nil
                 errorPipe.fileHandleForReading.readabilityHandler = nil
+                if let line = outputBuffer.finish() { self?.handleProcessOutputLine(line) }
+                if let line = errorBuffer.finish() { self?.handleProcessOutputLine(line) }
                 self?.currentProcess = nil
+                self?.downloadButton.title = "Download"
+                self?.downloadButton.isEnabled = true
                 self?.findDownloadedFileIfNeeded()
                 self?.appendLog("\nyt-dlp finished with exit code \(finishedProcess.terminationStatus).\n")
+
+                if self?.cancellationRequested == true {
+                    self?.statusLabel.stringValue = "Cancelled"
+                    self?.progressDetailsLabel.stringValue = ""
+                    self?.appendLog("Download cancelled.\n")
+                    self?.cancellationRequested = false
+                    return
+                }
 
                 if finishedProcess.terminationStatus != 0 {
                     self?.finishProgress(exitCode: finishedProcess.terminationStatus)
@@ -816,7 +855,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                 }
 
                 if isAudioOnlyMode {
-                    self?.progressIndicator.doubleValue = 100
+                    self?.completeProgress()
                     self?.statusLabel.stringValue = "Audio MP3 download complete"
                     self?.appendLog("Audio Only MP3 download complete.\n")
                     return
@@ -846,14 +885,19 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
         do {
             resetProgress()
+            appendLog("Live yt-dlp progress reporting enabled.\n")
             appendLog("Starting yt-dlp...\n")
             appendLog("Saving to: \(outputTemplate)\n\n")
             currentProcess = process
             try process.run()
+            downloadButton.title = "Cancel"
         } catch {
             currentProcess = nil
             outputPipe.fileHandleForReading.readabilityHandler = nil
             errorPipe.fileHandleForReading.readabilityHandler = nil
+            downloadButton.title = "Download"
+            downloadButton.isEnabled = true
+            statusLabel.stringValue = "Download could not start"
             appendLog("Error running yt-dlp: \(error)\n")
         }
     }
@@ -938,10 +982,19 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     }
 
     func handleProcessOutput(_ text: String) {
-        appendLog(text)
-        updateProgress(from: text)
-        updatePostProcessingStatus(from: text)
-        updateDownloadedFile(from: text)
+        text.components(separatedBy: .newlines)
+            .filter { !$0.isEmpty }
+            .forEach(handleProcessOutputLine)
+    }
+
+    func handleProcessOutputLine(_ line: String) {
+        if let progress = parseYTDLPProgressLine(line) {
+            updateProgress(progress)
+            return
+        }
+        appendLog(line + "\n")
+        updatePostProcessingStatus(from: line)
+        updateDownloadedFile(from: line)
     }
 
     func updatePostProcessingStatus(from text: String) {
@@ -953,39 +1006,73 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     }
 
     func resetProgress() {
+        cancellationRequested = false
         lastDownloadedFileURL = nil
         downloadStartDate = Date()
         revealButton.isEnabled = selectedFolder != nil
         progressIndicator.doubleValue = 0
+        progressPercentageLabel.stringValue = "0%"
+        progressDetailsLabel.stringValue = ""
         statusLabel.stringValue = "Starting download..."
     }
 
     func finishProgress(exitCode: Int32) {
         if exitCode == 0 {
-            progressIndicator.doubleValue = 100
+            completeProgress()
             statusLabel.stringValue = "Download complete"
         } else {
             statusLabel.stringValue = "Download ended with exit code \(exitCode)"
         }
     }
 
-    func updateProgress(from text: String) {
-        guard let percent = downloadPercent(from: text) else { return }
-
-        progressIndicator.doubleValue = percent
-        statusLabel.stringValue = String(format: "Downloading... %.1f%%", percent)
+    func updateProgress(_ progress: YTDLPProgress) {
+        guard !cancellationRequested else { return }
+        if let percent = progress.calculatedPercent {
+            progressIndicator.doubleValue = percent
+            progressPercentageLabel.stringValue = percent >= 100 ? "100%" : String(format: "%.1f%%", percent)
+        }
+        statusLabel.stringValue = "Downloading…"
+        progressDetailsLabel.stringValue = progressDetails(for: progress)
     }
 
-    func downloadPercent(from text: String) -> Double? {
-        let pattern = #"\[download\]\s+(\d+(?:\.\d+)?)%"#
+    private func completeProgress() {
+        progressIndicator.doubleValue = 100
+        progressPercentageLabel.stringValue = "100%"
+    }
 
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).last,
-              let percentRange = Range(match.range(at: 1), in: text) else {
-            return nil
+    private func progressDetails(for progress: YTDLPProgress) -> String {
+        var details: [String] = []
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
+        formatter.includesUnit = true
+        formatter.isAdaptive = true
+
+        if let downloaded = progress.downloadedBytes {
+            let downloadedText = formatter.string(fromByteCount: downloaded)
+            if let total = progress.effectiveTotalBytes {
+                let marker = progress.usesEstimatedTotal ? "~" : ""
+                details.append("\(downloadedText) of \(marker)\(formatter.string(fromByteCount: total))")
+            } else {
+                details.append("\(downloadedText) downloaded")
+            }
         }
+        if let speed = progress.bytesPerSecond, speed > 0 {
+            details.append("\(formatter.string(fromByteCount: Int64(speed)))/s")
+        }
+        if let eta = progress.etaSeconds, eta >= 0 {
+            details.append("ETA \(formattedETA(eta))")
+        }
+        return details.joined(separator: " · ")
+    }
 
-        return Double(text[percentRange])
+    private func formattedETA(_ seconds: Int) -> String {
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        let remainingSeconds = seconds % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
+            : String(format: "%02d:%02d", minutes, remainingSeconds)
     }
 
     func updateDownloadedFile(from text: String) {
