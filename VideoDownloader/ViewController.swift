@@ -6,6 +6,7 @@
 //
 
 import Cocoa
+import Darwin
 
 class ViewController: NSViewController, NSTextFieldDelegate {
 
@@ -31,17 +32,20 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     var ytDLPChannelPopup: NSPopUpButton!
     var ytDLPVersionLabel: NSTextField!
     var downloadButton: NSButton!
+    var stopButton: NSButton!
     var saveTranscriptCheckbox: NSButton!
     var selectedFolder: URL?
     var lastDownloadedFileURL: URL?
     var downloadStartDate: Date?
-    var currentProcess: Process?
+    private var activeDownloadProcess: Process?
+    private var isPreparingDownload = false
     private var metadataProcess: Process?
     private var metadataWorkItem: DispatchWorkItem?
     private var metadataURL: String?
     private var metadataTitle: String?
     private var videoInformationView: NSView!
-    private var cancellationRequested = false
+    private var downloadWasCancelled = false
+    private var acceptsProgressUpdates = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -181,6 +185,14 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         downloadButton.font = NSFont.systemFont(ofSize: 16, weight: .semibold)
         downloadButton.symbolName = "arrow.down.to.line.compact"
 
+        let stopButton = GradientButton(title: "Stop", target: self, action: #selector(stopDownload(_:)))
+        stopButton.translatesAutoresizingMaskIntoConstraints = false
+        stopButton.font = NSFont.systemFont(ofSize: 16, weight: .semibold)
+        stopButton.symbolName = "stop.fill"
+        stopButton.isEnabled = false
+        let downloadControls = makeHorizontalStack(spacing: 12, views: [downloadButton, stopButton])
+        downloadControls.distribution = .fillEqually
+
         let progressBar = NSProgressIndicator()
         progressBar.translatesAutoresizingMaskIntoConstraints = false
         progressBar.isIndeterminate = false
@@ -245,7 +257,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         ])
         footerRow.distribution = .fillEqually
 
-        [appIcon, titleLabel, subtitleLabel, urlRow, informationCard, folderRow, selectorRow, chaptersCard, downloadButton, statusPanel, footerRow].forEach {
+        [appIcon, titleLabel, subtitleLabel, urlRow, informationCard, folderRow, selectorRow, chaptersCard, downloadControls, statusPanel, footerRow].forEach {
             stack.addArrangedSubview($0)
         }
 
@@ -273,6 +285,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         ytDLPChannelPopup = channelPopup
         ytDLPVersionLabel = versionLabel
         self.downloadButton = downloadButton
+        self.stopButton = stopButton
         statusCopy.insertArrangedSubview(versionLabel, at: 2)
 
         let panelWidth = panel.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.66)
@@ -310,8 +323,9 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             folderRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             selectorRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             chaptersCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            downloadButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            downloadControls.widthAnchor.constraint(equalTo: stack.widthAnchor),
             downloadButton.heightAnchor.constraint(equalToConstant: 52),
+            stopButton.heightAnchor.constraint(equalTo: downloadButton.heightAnchor),
             statusPanel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusPanel.heightAnchor.constraint(greaterThanOrEqualToConstant: 152),
             footerRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -646,13 +660,8 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     }
 
     @IBAction func downloadClicked(_ sender: NSButton) {
-        if let process = currentProcess, process.isRunning {
-            cancellationRequested = true
-            process.terminate()
-            sender.isEnabled = false
-            statusLabel.stringValue = "Cancelled"
-            progressDetailsLabel.stringValue = ""
-            appendLog("Cancelling download…\n")
+        if isPreparingDownload || activeDownloadProcess?.isRunning == true {
+            appendLog("A download is already running.\n")
             return
         }
 
@@ -673,11 +682,6 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
         guard let folder = selectedFolder else {
             appendLog("Please choose a download folder.\n")
-            return
-        }
-
-        guard currentProcess == nil else {
-            appendLog("A download is already running. Please wait for it to finish.\n")
             return
         }
 
@@ -719,11 +723,12 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             return
         }
 
-        sender.isEnabled = false
+        isPreparingDownload = true
+        setDownloadControls(isDownloading: false, isPreparing: true)
         statusLabel.stringValue = "Preparing yt-dlp..."
-        YTDLPManager.shared.executableURL(log: { [weak self] in self?.appendLog($0) }) { [weak self, weak sender] result in
-            sender?.isEnabled = true
+        YTDLPManager.shared.executableURL(log: { [weak self] in self?.appendLog($0) }) { [weak self] result in
             guard let self else { return }
+            self.isPreparingDownload = false
             switch result {
             case .success(let executableURL):
                 self.startDownload(
@@ -736,10 +741,83 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                     shouldSaveTranscript: shouldSaveTranscript
                 )
             case .failure(let error):
+                self.setDownloadControls(isDownloading: false)
                 self.statusLabel.stringValue = "yt-dlp unavailable"
                 self.appendLog("Error preparing yt-dlp: \(error.localizedDescription)\n")
             }
         }
+    }
+
+    @IBAction func stopDownload(_ sender: NSButton) {
+        guard let process = activeDownloadProcess, process.isRunning else { return }
+
+        downloadWasCancelled = true
+        acceptsProgressUpdates = false
+        sender.isEnabled = false
+        statusLabel.stringValue = "Stopping download…"
+        progressDetailsLabel.stringValue = ""
+        appendLog("User requested download cancellation.\n")
+
+        let rootPID = process.processIdentifier
+        let childPIDs = descendantProcessIDs(of: rootPID)
+        childPIDs.reversed().forEach { kill($0, SIGTERM) }
+        process.terminate()
+
+        if !childPIDs.isEmpty {
+            appendLog("Requested termination of \(childPIDs.count) child process\(childPIDs.count == 1 ? "" : "es") belonging to this download.\n")
+        }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.5) { [weak self, weak process] in
+            guard let process else { return }
+            var forcedTermination = false
+
+            for pid in childPIDs where kill(pid, 0) == 0 {
+                kill(pid, SIGKILL)
+                forcedTermination = true
+            }
+            if process.isRunning {
+                kill(rootPID, SIGKILL)
+                forcedTermination = true
+            }
+
+            if forcedTermination {
+                DispatchQueue.main.async {
+                    self?.appendLog("Forced termination of processes that did not exit gracefully.\n")
+                }
+            }
+        }
+    }
+
+    private func setDownloadControls(isDownloading: Bool, isPreparing: Bool = false) {
+        downloadButton.isEnabled = !isDownloading && !isPreparing
+        stopButton.isEnabled = isDownloading
+    }
+
+    /// Returns only descendants whose parent chain begins at this app-owned process.
+    private func descendantProcessIDs(of parentPID: pid_t) -> [pid_t] {
+        var descendants: [pid_t] = []
+        var pending = [parentPID]
+
+        while let parent = pending.popLast() {
+            var capacity = 16
+            while true {
+                var children = [pid_t](repeating: 0, count: capacity)
+                let byteCount = Int32(children.count * MemoryLayout<pid_t>.size)
+                let result = proc_listchildpids(parent, &children, byteCount)
+                guard result > 0 else { break }
+
+                let count = Int(result)
+                if count < capacity {
+                    let validChildren = children.prefix(count).filter { $0 > 0 }
+                    descendants.append(contentsOf: validChildren)
+                    pending.append(contentsOf: validChildren)
+                    break
+                }
+                capacity *= 2
+            }
+        }
+
+        return descendants
     }
 
     private func startDownload(
@@ -751,6 +829,11 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         shouldPreserveChapters: Bool,
         shouldSaveTranscript: Bool
     ) {
+        guard activeDownloadProcess?.isRunning != true else {
+            appendLog("A download is already running.\n")
+            setDownloadControls(isDownloading: true)
+            return
+        }
         appendLog("yt-dlp path: \(ytDLPURL.path)\n")
         appendLog("Selected output folder: \(folder.path)\n")
 
@@ -849,65 +932,69 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
         process.terminationHandler = { [weak self] finishedProcess in
             DispatchQueue.main.async {
+                guard let self else { return }
                 outputPipe.fileHandleForReading.readabilityHandler = nil
                 errorPipe.fileHandleForReading.readabilityHandler = nil
-                if let line = outputBuffer.finish() { self?.handleProcessOutputLine(line) }
-                if let line = errorBuffer.finish() { self?.handleProcessOutputLine(line) }
-                self?.currentProcess = nil
-                self?.downloadButton.title = "Download"
-                self?.downloadButton.isEnabled = true
-                self?.findDownloadedFileIfNeeded()
-                self?.appendLog("\nyt-dlp finished with exit code \(finishedProcess.terminationStatus).\n")
+                if !self.downloadWasCancelled {
+                    if let line = outputBuffer.finish() { self.handleProcessOutputLine(line) }
+                    if let line = errorBuffer.finish() { self.handleProcessOutputLine(line) }
+                }
+                if self.activeDownloadProcess === finishedProcess {
+                    self.activeDownloadProcess = nil
+                }
+                self.acceptsProgressUpdates = false
+                self.setDownloadControls(isDownloading: false)
+                self.findDownloadedFileIfNeeded()
+                self.appendLog("\nyt-dlp finished with exit code \(finishedProcess.terminationStatus).\n")
 
-                if self?.cancellationRequested == true {
+                if self.downloadWasCancelled {
                     if shouldSaveTranscript {
                         let created = TranscriptProcessor.newlyCreatedSubtitleFiles(in: folder, excluding: existingSubtitleFiles)
                         TranscriptProcessor.removeCreatedSubtitleFiles(created)
                     }
-                    self?.statusLabel.stringValue = "Cancelled"
-                    self?.progressDetailsLabel.stringValue = ""
-                    self?.appendLog("Download cancelled.\n")
-                    self?.cancellationRequested = false
+                    self.statusLabel.stringValue = "Download stopped"
+                    self.progressDetailsLabel.stringValue = ""
+                    self.appendLog("yt-dlp process terminated.\n")
                     return
                 }
 
                 if finishedProcess.terminationStatus != 0 {
-                    self?.finishProgress(exitCode: finishedProcess.terminationStatus)
-                    self?.appendLog("Error: yt-dlp exited with non-zero status \(finishedProcess.terminationStatus).\n")
+                    self.finishProgress(exitCode: finishedProcess.terminationStatus)
+                    self.appendLog("Error: yt-dlp exited with non-zero status \(finishedProcess.terminationStatus).\n")
                     return
                 }
 
-                self?.appendLog("yt-dlp download completed.\n")
+                self.appendLog("yt-dlp download completed.\n")
 
                 if shouldPreserveChapters {
-                    self?.inspectChapterMetadata(for: self?.lastDownloadedFileURL)
+                    self.inspectChapterMetadata(for: self.lastDownloadedFileURL)
                 }
 
                 if isAudioOnlyMode {
-                    self?.completeProgress()
-                    self?.statusLabel.stringValue = "Audio MP3 download complete"
-                    self?.appendLog("Audio Only MP3 download complete.\n")
-                    if shouldSaveTranscript { self?.createTranscript(in: folder, excluding: existingSubtitleFiles) }
+                    self.completeProgress()
+                    self.statusLabel.stringValue = "Audio MP3 download complete"
+                    self.appendLog("Audio Only MP3 download complete.\n")
+                    if shouldSaveTranscript { self.createTranscript(in: folder, excluding: existingSubtitleFiles) }
                     return
                 }
 
-                guard let downloadedFileURL = self?.lastDownloadedFileURL else {
-                    self?.finishProgress(exitCode: 1)
-                    self?.appendLog("Error: yt-dlp finished, but the downloaded MP4 could not be found.\n")
+                guard let downloadedFileURL = self.lastDownloadedFileURL else {
+                    self.finishProgress(exitCode: 1)
+                    self.appendLog("Error: yt-dlp finished, but the downloaded MP4 could not be found.\n")
                     return
                 }
 
-                self?.lastDownloadedFileURL = downloadedFileURL
-                self?.revealButton.isEnabled = true
-                self?.finishProgress(exitCode: 0)
-                self?.statusLabel.stringValue = "Download complete: \(downloadedFileURL.lastPathComponent)"
-                self?.appendLog("Download complete: \(downloadedFileURL.path)\n")
+                self.lastDownloadedFileURL = downloadedFileURL
+                self.revealButton.isEnabled = true
+                self.finishProgress(exitCode: 0)
+                self.statusLabel.stringValue = "Download complete: \(downloadedFileURL.lastPathComponent)"
+                self.appendLog("Download complete: \(downloadedFileURL.path)\n")
 
-                if shouldSaveTranscript { self?.createTranscript(in: folder, excluding: existingSubtitleFiles) }
+                if shouldSaveTranscript { self.createTranscript(in: folder, excluding: existingSubtitleFiles) }
 
                 if shouldPreserveChapters {
-                    self?.appendLog("Checking final MP4 for embedded chapters...\n")
-                    self?.verifyEmbeddedChapters(
+                    self.appendLog("Checking final MP4 for embedded chapters...\n")
+                    self.verifyEmbeddedChapters(
                         in: downloadedFileURL,
                         ffprobePath: ffprobePath
                     )
@@ -920,15 +1007,16 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             appendLog("Live yt-dlp progress reporting enabled.\n")
             appendLog("Starting yt-dlp...\n")
             appendLog("Saving to: \(outputTemplate)\n\n")
-            currentProcess = process
+            activeDownloadProcess = process
             try process.run()
-            downloadButton.title = "Cancel"
+            acceptsProgressUpdates = true
+            setDownloadControls(isDownloading: true)
         } catch {
-            currentProcess = nil
+            activeDownloadProcess = nil
+            acceptsProgressUpdates = false
             outputPipe.fileHandleForReading.readabilityHandler = nil
             errorPipe.fileHandleForReading.readabilityHandler = nil
-            downloadButton.title = "Download"
-            downloadButton.isEnabled = true
+            setDownloadControls(isDownloading: false)
             statusLabel.stringValue = "Download could not start"
             appendLog("Error running yt-dlp: \(error)\n")
         }
@@ -949,7 +1037,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     }
 
     @objc private func checkForYTDLPUpdatesClicked(_ sender: NSButton) {
-        guard currentProcess == nil else {
+        guard activeDownloadProcess == nil, !isPreparingDownload else {
             appendLog("Wait for the current download to finish before updating yt-dlp.\n")
             return
         }
@@ -1041,7 +1129,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     }
 
     func resetProgress() {
-        cancellationRequested = false
+        downloadWasCancelled = false
         lastDownloadedFileURL = nil
         downloadStartDate = Date()
         revealButton.isEnabled = selectedFolder != nil
@@ -1061,7 +1149,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     }
 
     func updateProgress(_ progress: YTDLPProgress) {
-        guard !cancellationRequested else { return }
+        guard acceptsProgressUpdates, !downloadWasCancelled else { return }
         if let percent = progress.calculatedPercent {
             progressIndicator.doubleValue = percent
             progressPercentageLabel.stringValue = percent >= 100 ? "100%" : String(format: "%.1f%%", percent)
@@ -1125,7 +1213,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                 let transcriptURL = try TranscriptProcessor.createTranscript(from: subtitleURL, beside: mediaURL)
                 TranscriptProcessor.removeCreatedSubtitleFiles(candidates)
                 DispatchQueue.main.async {
-                    guard self?.cancellationRequested != true else { return }
+                    guard self?.downloadWasCancelled != true else { return }
                     self?.statusLabel.stringValue = "Transcript saved."
                     self?.appendLog("Transcript saved: \(transcriptURL.path)\n")
                 }
