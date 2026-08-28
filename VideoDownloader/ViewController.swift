@@ -167,7 +167,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
         let transcriptCheckbox = NSButton(checkboxWithTitle: "Save Transcript", target: nil, action: nil)
         transcriptCheckbox.translatesAutoresizingMaskIntoConstraints = false
-        transcriptCheckbox.state = .off
+        transcriptCheckbox.state = .on
         transcriptCheckbox.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         transcriptCheckbox.contentTintColor = .white
         transcriptCheckbox.toolTip = "Save available English captions as a plain-text transcript"
