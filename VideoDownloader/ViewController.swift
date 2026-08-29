@@ -33,6 +33,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     var ytDLPVersionLabel: NSTextField!
     var downloadButton: NSButton!
     var stopButton: NSButton!
+    var videoInfoButton: NSButton!
     var saveTranscriptCheckbox: NSButton!
     var selectedFolder: URL?
     var lastDownloadedFileURL: URL?
@@ -46,10 +47,14 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     private var videoInformationView: NSView!
     private var downloadWasCancelled = false
     private var acceptsProgressUpdates = false
+    private var activeVideoInfoProcess: Process?
+    private var videoInfoWindowController: VideoInfoWindowController?
+    private var isRetrievingVideoInfo = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
         buildInterface()
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationWillTerminate), name: NSApplication.willTerminateNotification, object: nil)
     }
 
     override func viewDidAppear() {
@@ -117,11 +122,17 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
         let urlField = makeInputField(placeholder: "https://www.youtube.com/watch?v=...")
         urlField.delegate = self
+        let infoButton = makeSecondaryButton(title: "Video Info", action: #selector(videoInfoClicked(_:)))
+        infoButton.isEnabled = false
+        infoButton.toolTip = "Retrieve metadata without downloading the video"
+        infoButton.setContentHuggingPriority(.required, for: .horizontal)
+        let urlControls = makeHorizontalStack(spacing: 10, views: [urlField, infoButton])
+        urlField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let urlRow = makeInputRow(
             symbolName: "link",
             title: "Video URL",
             subtitle: "Enter the video URL",
-            trailingView: urlField
+            trailingView: urlControls
         )
 
         let headlineLabel = makeVideoTitleLabel()
@@ -286,6 +297,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         ytDLPVersionLabel = versionLabel
         self.downloadButton = downloadButton
         self.stopButton = stopButton
+        self.videoInfoButton = infoButton
         statusCopy.insertArrangedSubview(versionLabel, at: 2)
 
         let panelWidth = panel.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.66)
@@ -1342,6 +1354,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     func controlTextDidChange(_ notification: Notification) {
         guard let field = notification.object as? NSTextField, field === urlTextField else { return }
         let url = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        videoInfoButton.isEnabled = !isRetrievingVideoInfo && isValidMetadataURL(url)
 
         guard url != metadataURL else { return }
         clearVideoMetadata()
@@ -1363,6 +1376,78 @@ class ViewController: NSViewController, NSTextFieldDelegate {
               ["http", "https"].contains(scheme),
               url.host != nil else { return false }
         return true
+    }
+
+    @objc private func videoInfoClicked(_ sender: NSButton) {
+        guard !isRetrievingVideoInfo else { return }
+        let url = currentURLText()
+        guard isValidMetadataURL(url) else { return }
+
+        isRetrievingVideoInfo = true
+        sender.isEnabled = false
+        progressDetailsLabel.stringValue = "Retrieving video information…"
+        appendLog("Retrieving full video information…\n")
+
+        YTDLPManager.shared.executableURL(log: { [weak self] in self?.appendLog($0) }) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let executableURL): self.runVideoInfoExtraction(for: url, executableURL: executableURL)
+            case .failure(let error): self.finishVideoInfo(.failure(error), requestedURL: url)
+            }
+        }
+    }
+
+    private func runVideoInfoExtraction(for url: String, executableURL: URL) {
+        guard activeVideoInfoProcess?.isRunning != true else { return }
+        let process = Process()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.executableURL = executableURL
+        process.arguments = ytDLPConfigurationArguments(logRuntimeStatus: false) + ["--dump-single-json", "--skip-download", "--no-playlist", url]
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        activeVideoInfoProcess = process
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            do {
+                try process.run()
+                var stdout = Data(); var stderr = Data()
+                let reads = DispatchGroup()
+                reads.enter(); DispatchQueue.global(qos: .utility).async { stdout = outputPipe.fileHandleForReading.readDataToEndOfFile(); reads.leave() }
+                reads.enter(); DispatchQueue.global(qos: .utility).async { stderr = errorPipe.fileHandleForReading.readDataToEndOfFile(); reads.leave() }
+                process.waitUntilExit(); reads.wait()
+                guard process.terminationStatus == 0 else {
+                    let message = String(data: stderr, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "yt-dlp exited with code \(process.terminationStatus)."
+                    throw NSError(domain: "VideoInfo", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
+                }
+                let metadata = try VideoMetadata(json: stdout)
+                DispatchQueue.main.async { self?.finishVideoInfo(.success(metadata), requestedURL: url) }
+            } catch {
+                DispatchQueue.main.async { self?.finishVideoInfo(.failure(error), requestedURL: url) }
+            }
+        }
+    }
+
+    private func finishVideoInfo(_ result: Result<VideoMetadata, Error>, requestedURL: String) {
+        activeVideoInfoProcess = nil
+        isRetrievingVideoInfo = false
+        videoInfoButton.isEnabled = isValidMetadataURL(currentURLText())
+        progressDetailsLabel.stringValue = activeDownloadProcess?.isRunning == true ? progressDetailsLabel.stringValue : "Enter a URL and click Download to start."
+        switch result {
+        case .success(let metadata):
+            let controller = videoInfoWindowController ?? VideoInfoWindowController()
+            videoInfoWindowController = controller
+            controller.display(metadata)
+            appendLog("Full video information loaded: \(metadata.title ?? requestedURL) (\(metadata.formats.count) formats).\n")
+        case .failure(let error):
+            appendLog("Unable to retrieve video information: \(error.localizedDescription)\n")
+            let alert = NSAlert(); alert.messageText = "Unable to retrieve video information."; alert.informativeText = error.localizedDescription; alert.alertStyle = .warning
+            if let window = view.window { alert.beginSheetModal(for: window) }
+        }
+    }
+
+    @objc private func applicationWillTerminate() {
+        if activeVideoInfoProcess?.isRunning == true { activeVideoInfoProcess?.terminate() }
     }
 
     private func clearVideoMetadata() {
