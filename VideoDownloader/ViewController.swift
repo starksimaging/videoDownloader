@@ -966,10 +966,6 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
                 self.appendLog("yt-dlp download completed.\n")
 
-                if shouldPreserveChapters {
-                    self.inspectChapterMetadata(for: self.lastDownloadedFileURL)
-                }
-
                 if isAudioOnlyMode {
                     self.completeProgress()
                     self.statusLabel.stringValue = "Audio MP3 download complete"
@@ -1510,12 +1506,10 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     }
 
     /// yt-dlp chapters are timestamped sections supplied by the video's publisher.
-    /// `--embed-chapters` writes those markers into supported media containers, while
-    /// `--write-info-json` saves the source metadata beside the download. Some videos
-    /// simply do not publish chapters; yt-dlp still completes those downloads normally.
+    /// Embedding them does not require writing a separate JSON metadata sidecar.
     func chapterArguments(preservingChapters: Bool) -> [String] {
         preservingChapters
-            ? ["--embed-chapters", "--write-info-json"]
+            ? ["--embed-chapters"]
             : []
     }
 
@@ -1571,44 +1565,6 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                     self?.appendLog("Embedded chapters verified: \(chapterLines.count) chapters\n")
                     self?.appendLog("\(chapterLines.joined(separator: "\n"))\n")
                 }
-            }
-        }
-    }
-
-    private func inspectChapterMetadata(for mediaURL: URL?) {
-        guard let mediaURL else {
-            appendLog("Chapter metadata was requested, but its sidecar file could not be located.\n")
-            return
-        }
-
-        let infoJSONURL = mediaURL
-            .deletingPathExtension()
-            .appendingPathExtension("info.json")
-
-        // Reading/parsing the optional sidecar off the main queue keeps the AppKit UI responsive.
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let data = try? Data(contentsOf: infoJSONURL),
-                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                DispatchQueue.main.async {
-                    self?.appendLog("No chapter metadata was found; the download is still complete.\n")
-                }
-                return
-            }
-
-            let chapters = root["chapters"] as? [[String: Any]] ?? []
-            let lines = chapters.compactMap { chapter -> String? in
-                guard let start = chapter["start_time"] as? Double else { return nil }
-                let title = (chapter["title"] as? String) ?? "Untitled chapter"
-                return "\(self?.chapterTimestamp(start) ?? "00:00") - \(title)"
-            }
-
-            DispatchQueue.main.async {
-                self?.appendLog("Chapter metadata saved: \(infoJSONURL.path)\n")
-                guard !lines.isEmpty else {
-                    self?.appendLog("This video does not contain chapter markers.\n")
-                    return
-                }
-                self?.appendLog("Chapters:\n\(lines.joined(separator: "\n"))\n")
             }
         }
     }
