@@ -127,7 +127,9 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         infoButton.toolTip = "Retrieve metadata without downloading the video"
         infoButton.setContentHuggingPriority(.required, for: .horizontal)
         let urlControls = makeHorizontalStack(spacing: 10, views: [urlField, infoButton])
+        urlControls.distribution = .fill
         urlField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        infoButton.widthAnchor.constraint(equalToConstant: 100).isActive = true
         let urlRow = makeInputRow(
             symbolName: "link",
             title: "Video URL",

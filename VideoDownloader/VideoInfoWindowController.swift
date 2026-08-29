@@ -52,9 +52,28 @@ final class VideoInfoViewController: NSViewController, NSTableViewDataSource, NS
     }
 
     private func makeOverview() -> NSView {
-        overviewStack.orientation = .vertical; overviewStack.alignment = .leading; overviewStack.spacing = 18; overviewStack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 18, right: 18)
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.documentView = overviewStack
-        overviewStack.translatesAutoresizingMaskIntoConstraints = false; overviewStack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.drawsBackground = false
+
+        let documentView = NSView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = documentView
+
+        overviewStack.orientation = .vertical
+        overviewStack.alignment = .leading
+        overviewStack.spacing = 18
+        overviewStack.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(overviewStack)
+
+        NSLayoutConstraint.activate([
+            overviewStack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 18),
+            overviewStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 20),
+            overviewStack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -20),
+            overviewStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -20),
+            documentView.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
+        ])
         return scroll
     }
     private func makeFormats() -> NSView {
@@ -70,12 +89,141 @@ final class VideoInfoViewController: NSViewController, NSTableViewDataSource, NS
     private func makeRaw() -> NSView { rawTextView.isEditable = false; rawTextView.isSelectable = true; rawTextView.isRichText = false; rawTextView.font = .monospacedSystemFont(ofSize: 11, weight: .regular); let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true; scroll.documentView = rawTextView; return scroll }
     private func tab(title: String, view: NSView) -> NSTabViewItem { let item = NSTabViewItem(); item.label = title; item.view = view; return item }
     private func addSection(_ title: String, rows: [(String, String?)]) {
-        let valid = rows.filter { !($0.1?.isEmpty ?? true) }; guard !valid.isEmpty else { return }
-        let header = NSTextField(labelWithString: title); header.font = .systemFont(ofSize: 18, weight: .semibold); overviewStack.addArrangedSubview(header)
-        for (label, value) in valid { let field = NSTextField(wrappingLabelWithString: "\(label)\n\(value!)"); field.isSelectable = true; field.font = .systemFont(ofSize: 13); field.translatesAutoresizingMaskIntoConstraints = false; field.widthAnchor.constraint(equalTo: overviewStack.widthAnchor, constant: -36).isActive = true; overviewStack.addArrangedSubview(field) }
+        let validRows = rows.compactMap { name, value -> (String, String)? in
+            guard let value, !value.isEmpty else { return nil }
+            return (name, value)
+        }
+        guard !validRows.isEmpty else { return }
+
+        let section = makeSectionContainer(title: title)
+        for (name, value) in validRows {
+            let rowStack = NSStackView()
+            rowStack.orientation = .horizontal
+            rowStack.alignment = .top
+            rowStack.spacing = 12
+            rowStack.translatesAutoresizingMaskIntoConstraints = false
+
+            let nameLabel = NSTextField(labelWithString: name)
+            nameLabel.font = .systemFont(ofSize: 13, weight: .medium)
+            nameLabel.textColor = .secondaryLabelColor
+            nameLabel.alignment = .right
+            nameLabel.translatesAutoresizingMaskIntoConstraints = false
+            nameLabel.setContentHuggingPriority(.required, for: .horizontal)
+            nameLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+            let valueLabel = NSTextField(wrappingLabelWithString: value)
+            valueLabel.font = .systemFont(ofSize: 13)
+            valueLabel.isSelectable = true
+            valueLabel.lineBreakMode = .byWordWrapping
+            valueLabel.maximumNumberOfLines = 0
+            valueLabel.translatesAutoresizingMaskIntoConstraints = false
+            valueLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            valueLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+            rowStack.addArrangedSubview(nameLabel)
+            rowStack.addArrangedSubview(valueLabel)
+            section.content.addArrangedSubview(rowStack)
+
+            NSLayoutConstraint.activate([
+                nameLabel.widthAnchor.constraint(equalToConstant: 155),
+                rowStack.widthAnchor.constraint(equalTo: section.content.widthAnchor)
+            ])
+        }
     }
-    private func addDescription(_ value: String?) { guard let value, !value.isEmpty else { return }; let title = NSTextField(labelWithString: "Description"); title.font = .systemFont(ofSize: 18, weight: .semibold); overviewStack.addArrangedSubview(title); let text = NSTextView(); text.string = value; text.isEditable = false; text.isSelectable = true; text.font = .systemFont(ofSize: 13); let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.documentView = text; scroll.translatesAutoresizingMaskIntoConstraints = false; scroll.heightAnchor.constraint(equalToConstant: 180).isActive = true; scroll.widthAnchor.constraint(equalTo: overviewStack.widthAnchor, constant: -36).isActive = true; overviewStack.addArrangedSubview(scroll) }
-    private func addChapters(_ chapters: [VideoMetadata.Chapter]) { let title = NSTextField(labelWithString: "Chapters"); title.font = .systemFont(ofSize: 18, weight: .semibold); overviewStack.addArrangedSubview(title); if chapters.isEmpty { overviewStack.addArrangedSubview(NSTextField(labelWithString: "No chapters available.")); return }; if chapterTable.tableColumns.isEmpty { for (id, title, width) in [("start","Start",80.0),("end","End",80.0),("title","Chapter",500.0)] { let c = NSTableColumn(identifier: .init(id)); c.title = title; c.width = width; chapterTable.addTableColumn(c) }; chapterTable.dataSource = self; chapterTable.delegate = self }; let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.documentView = chapterTable; scroll.translatesAutoresizingMaskIntoConstraints = false; scroll.heightAnchor.constraint(equalToConstant: min(240, CGFloat(chapters.count * 24 + 28))).isActive = true; scroll.widthAnchor.constraint(equalTo: overviewStack.widthAnchor, constant: -36).isActive = true; overviewStack.addArrangedSubview(scroll); chapterTable.reloadData() }
+
+    private func addDescription(_ value: String?) {
+        guard let value, !value.isEmpty else { return }
+        let section = makeSectionContainer(title: "Description")
+        let text = NSTextView()
+        text.string = value
+        text.isEditable = false
+        text.isSelectable = true
+        text.font = .systemFont(ofSize: 13)
+        text.textContainerInset = NSSize(width: 8, height: 8)
+
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = text
+        section.content.addArrangedSubview(scroll)
+
+        NSLayoutConstraint.activate([
+            scroll.widthAnchor.constraint(equalTo: section.content.widthAnchor),
+            scroll.heightAnchor.constraint(equalToConstant: 180)
+        ])
+    }
+
+    private func addChapters(_ chapters: [VideoMetadata.Chapter]) {
+        let section = makeSectionContainer(title: "Chapters")
+        guard !chapters.isEmpty else {
+            section.content.addArrangedSubview(NSTextField(labelWithString: "No chapters available."))
+            return
+        }
+
+        if chapterTable.tableColumns.isEmpty {
+            for (id, title, width) in [("start", "Start", 80.0), ("end", "End", 80.0), ("title", "Chapter", 500.0)] {
+                let column = NSTableColumn(identifier: .init(id))
+                column.title = title
+                column.width = width
+                chapterTable.addTableColumn(column)
+            }
+            chapterTable.dataSource = self
+            chapterTable.delegate = self
+        }
+
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = chapterTable
+        section.content.addArrangedSubview(scroll)
+
+        NSLayoutConstraint.activate([
+            scroll.widthAnchor.constraint(equalTo: section.content.widthAnchor),
+            scroll.heightAnchor.constraint(equalToConstant: min(240, CGFloat(chapters.count * 24 + 28)))
+        ])
+        chapterTable.reloadData()
+    }
+
+    private func makeSectionContainer(title: String) -> (container: NSView, content: NSStackView) {
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 18, weight: .semibold)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+
+        let content = NSStackView()
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 9
+        content.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(titleLabel)
+        container.addSubview(separator)
+        container.addSubview(content)
+        overviewStack.addArrangedSubview(container)
+
+        NSLayoutConstraint.activate([
+            container.widthAnchor.constraint(equalTo: overviewStack.widthAnchor),
+            titleLabel.topAnchor.constraint(equalTo: container.topAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
+            separator.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 7),
+            separator.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            content.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 10),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        return (container, content)
+    }
     func numberOfRows(in tableView: NSTableView) -> Int { tableView === formatsTable ? filteredFormats.count : (metadata?.chapters.count ?? 0) }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? { let id = tableColumn?.identifier.rawValue ?? ""; let value: String; if tableView === chapterTable { let c = metadata!.chapters[row]; value = id == "start" ? Self.duration(c.start) ?? "—" : id == "end" ? Self.duration(c.end) ?? "—" : c.title } else { let f = filteredFormats[row]; switch id { case "id": value=f.id ?? "—"; case "kind": value=f.kind.rawValue; case "resolution": value=f.resolution; case "fps": value=f.fps.map(VideoMetadata.number) ?? "—"; case "vcodec": value=f.videoCodec.map(VideoMetadata.friendlyCodec) ?? "—"; case "acodec": value=f.audioCodec.map(VideoMetadata.friendlyCodec) ?? "—"; case "ext": value=f.extensionName ?? "—"; case "bitrate": value=f.bitrate.map { "\(VideoMetadata.number($0))k" } ?? "—"; case "language": value=f.language ?? "—"; default: value=Self.bytes(f.size) ?? "—" } }; let cell = NSTextField(labelWithString: value); cell.lineBreakMode = .byTruncatingTail; cell.toolTip = value; return cell }
     @objc private func filterChanged() { guard let metadata else { return }; switch filter.selectedSegment { case 1: filteredFormats = metadata.formats.filter { $0.kind == .video || $0.kind == .combined }; case 2: filteredFormats = metadata.formats.filter { $0.kind == .audio || $0.kind == .combined }; case 3: filteredFormats = metadata.formats.filter { $0.kind == .storyboard }; default: filteredFormats = metadata.formats }; formatsTable.reloadData() }
