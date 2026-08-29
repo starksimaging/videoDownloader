@@ -40,21 +40,16 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     var downloadStartDate: Date?
     private var activeDownloadProcess: Process?
     private var isPreparingDownload = false
-    private var metadataProcess: Process?
-    private var metadataWorkItem: DispatchWorkItem?
-    private var metadataURL: String?
-    private var metadataTitle: String?
+    private var cachedVideoMetadata: [String: VideoMetadata] = [:]
+    private var activeDownloadSourceURL: String?
     private var videoInformationView: NSView!
     private var downloadWasCancelled = false
     private var acceptsProgressUpdates = false
-    private var activeVideoInfoProcess: Process?
     private var videoInfoWindowController: VideoInfoWindowController?
-    private var isRetrievingVideoInfo = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
         buildInterface()
-        NotificationCenter.default.addObserver(self, selector: #selector(applicationWillTerminate), name: NSApplication.willTerminateNotification, object: nil)
     }
 
     override func viewDidAppear() {
@@ -124,7 +119,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         urlField.delegate = self
         let infoButton = makeSecondaryButton(title: "Video Info", action: #selector(videoInfoClicked(_:)))
         infoButton.isEnabled = false
-        infoButton.toolTip = "Retrieve metadata without downloading the video"
+        infoButton.toolTip = "Show metadata cached by the current download"
         infoButton.setContentHuggingPriority(.required, for: .horizontal)
         let urlControls = makeHorizontalStack(spacing: 10, views: [urlField, infoButton])
         urlControls.distribution = .fill
@@ -176,7 +171,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         chaptersCheckbox.state = .on
         chaptersCheckbox.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         chaptersCheckbox.contentTintColor = .white
-        chaptersCheckbox.toolTip = "Embed available yt-dlp chapter markers and save the video metadata"
+        chaptersCheckbox.toolTip = "Embed available yt-dlp chapter markers"
 
         let transcriptCheckbox = NSButton(checkboxWithTitle: "Save Transcript", target: nil, action: nil)
         transcriptCheckbox.translatesAutoresizingMaskIntoConstraints = false
@@ -689,11 +684,6 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             return
         }
 
-        // Do not refetch metadata that was already resolved for this URL.
-        if metadataURL != url {
-            fetchVideoMetadata(for: url)
-        }
-
         guard let folder = selectedFolder else {
             appendLog("Please choose a download folder.\n")
             return
@@ -737,6 +727,8 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             return
         }
 
+        activeDownloadSourceURL = url
+        if cachedVideoMetadata[url] == nil { clearDisplayedVideoMetadata() }
         isPreparingDownload = true
         setDownloadControls(isDownloading: false, isPreparing: true)
         statusLabel.stringValue = "Preparing yt-dlp..."
@@ -850,6 +842,10 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         }
         appendLog("yt-dlp path: \(ytDLPURL.path)\n")
         appendLog("Selected output folder: \(folder.path)\n")
+        activeDownloadSourceURL = url
+        if cachedVideoMetadata[url] == nil {
+            clearDisplayedVideoMetadata()
+        }
 
         // yt-dlp uses this template to choose the final filename in the selected folder.
         let outputTemplate = folder.appendingPathComponent("%(title)s.%(ext)s").path
@@ -861,6 +857,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         var arguments = [
             "--newline",
             "--progress-template", YTDLPProgress.template,
+            "--print", VideoMetadata.printTemplate,
             "--print", "after_move:filepath"
         ]
         arguments += ytDLPConfigurationArguments(logRuntimeStatus: true)
@@ -985,6 +982,9 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                     self.statusLabel.stringValue = "Audio MP3 download complete"
                     self.appendLog("Audio Only MP3 download complete.\n")
                     if shouldSaveTranscript { self.createTranscript(in: folder, excluding: existingSubtitleFiles) }
+                    if let mediaURL = self.lastDownloadedFileURL {
+                        self.enrichCachedMetadataFromLocalFile(mediaURL, ffprobePath: ffprobePath, sourceURL: url)
+                    }
                     return
                 }
 
@@ -1001,6 +1001,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
                 self.appendLog("Download complete: \(downloadedFileURL.path)\n")
 
                 if shouldSaveTranscript { self.createTranscript(in: folder, excluding: existingSubtitleFiles) }
+                self.enrichCachedMetadataFromLocalFile(downloadedFileURL, ffprobePath: ffprobePath, sourceURL: url)
 
                 if shouldPreserveChapters {
                     self.appendLog("Checking final MP4 for embedded chapters...\n")
@@ -1122,12 +1123,80 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             updateProgress(progress)
             return
         }
+        if parseAndCacheVideoMetadataLine(line) {
+            return
+        }
         appendLog(line + "\n")
         if line.localizedCaseInsensitiveContains("subtitles") || line.localizedCaseInsensitiveContains("captions") {
             statusLabel.stringValue = "Retrieving transcript…"
         }
         updatePostProcessingStatus(from: line)
         updateDownloadedFile(from: line)
+    }
+
+    /// Consumes yt-dlp's prefixed JSON record without exposing the raw JSON in the log.
+    private func parseAndCacheVideoMetadataLine(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(VideoMetadata.linePrefix) else { return false }
+        let payload = String(trimmed.dropFirst(VideoMetadata.linePrefix.count))
+        guard let data = payload.data(using: .utf8), let sourceURL = activeDownloadSourceURL else {
+            appendLog("Video metadata was received but could not be associated with this download.\n")
+            return true
+        }
+        do {
+            let metadata = try VideoMetadata(json: data)
+            cachedVideoMetadata[sourceURL] = metadata
+            let enteredURL = urlTextField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if enteredURL == sourceURL { displayHeadline(metadata) }
+            videoInfoButton.isEnabled = isValidMetadataURL(enteredURL)
+            appendLog("Video information cached: \(metadata.title ?? sourceURL) — \(metadata.displayUploader ?? "Unknown channel").\n")
+        } catch {
+            appendLog("Could not decode video metadata from the download process: \(error.localizedDescription)\n")
+        }
+        return true
+    }
+
+    /// Completes selected-format details from the downloaded file using local ffprobe only.
+    private func enrichCachedMetadataFromLocalFile(_ mediaURL: URL, ffprobePath: String, sourceURL: String) {
+        guard cachedVideoMetadata[sourceURL] != nil else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let process = Process()
+            let outputPipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: ffprobePath)
+            process.arguments = [
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_format",
+                "-show_streams",
+                mediaURL.path
+            ]
+            process.standardOutput = outputPipe
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else {
+                    throw NSError(domain: "VideoInfo.ffprobe", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "ffprobe exited with status \(process.terminationStatus)."])
+                }
+                DispatchQueue.main.async {
+                    guard var metadata = self?.cachedVideoMetadata[sourceURL] else { return }
+                    do {
+                        try metadata.applyLocalFileProbe(json: data)
+                        self?.cachedVideoMetadata[sourceURL] = metadata
+                        let enteredURL = self?.urlTextField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if enteredURL == sourceURL { self?.displayHeadline(metadata) }
+                        self?.appendLog("Cached video information enriched from local file: \(mediaURL.lastPathComponent).\n")
+                    } catch {
+                        self?.appendLog("Could not parse local ffprobe information: \(error.localizedDescription)\n")
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.appendLog("Could not inspect the downloaded file locally: \(error.localizedDescription)\n")
+                }
+            }
+        }
     }
 
     func updatePostProcessingStatus(from text: String) {
@@ -1356,20 +1425,12 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     func controlTextDidChange(_ notification: Notification) {
         guard let field = notification.object as? NSTextField, field === urlTextField else { return }
         let url = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        videoInfoButton.isEnabled = !isRetrievingVideoInfo && isValidMetadataURL(url)
-
-        guard url != metadataURL else { return }
-        clearVideoMetadata()
-        metadataWorkItem?.cancel()
-        if metadataProcess?.isRunning == true {
-            metadataProcess?.terminate()
+        videoInfoButton.isEnabled = isValidMetadataURL(url)
+        if let metadata = cachedVideoMetadata[url] {
+            displayHeadline(metadata)
+        } else if url != activeDownloadSourceURL {
+            clearDisplayedVideoMetadata()
         }
-        metadataProcess = nil
-
-        guard isValidMetadataURL(url) else { return }
-        let workItem = DispatchWorkItem { [weak self] in self?.fetchVideoMetadata(for: url) }
-        metadataWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.65, execute: workItem)
     }
 
     private func isValidMetadataURL(_ value: String) -> Bool {
@@ -1381,158 +1442,38 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     }
 
     @objc private func videoInfoClicked(_ sender: NSButton) {
-        guard !isRetrievingVideoInfo else { return }
         let url = currentURLText()
         guard isValidMetadataURL(url) else { return }
-
-        isRetrievingVideoInfo = true
-        sender.isEnabled = false
-        progressDetailsLabel.stringValue = "Retrieving video information…"
-        appendLog("Retrieving full video information…\n")
-
-        YTDLPManager.shared.executableURL(log: { [weak self] in self?.appendLog($0) }) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let executableURL): self.runVideoInfoExtraction(for: url, executableURL: executableURL)
-            case .failure(let error): self.finishVideoInfo(.failure(error), requestedURL: url)
-            }
-        }
-    }
-
-    private func runVideoInfoExtraction(for url: String, executableURL: URL) {
-        guard activeVideoInfoProcess?.isRunning != true else { return }
-        let process = Process()
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.executableURL = executableURL
-        process.arguments = ytDLPConfigurationArguments(logRuntimeStatus: false) + ["--dump-single-json", "--skip-download", "--no-playlist", url]
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-        activeVideoInfoProcess = process
-
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            do {
-                try process.run()
-                var stdout = Data(); var stderr = Data()
-                let reads = DispatchGroup()
-                reads.enter(); DispatchQueue.global(qos: .utility).async { stdout = outputPipe.fileHandleForReading.readDataToEndOfFile(); reads.leave() }
-                reads.enter(); DispatchQueue.global(qos: .utility).async { stderr = errorPipe.fileHandleForReading.readDataToEndOfFile(); reads.leave() }
-                process.waitUntilExit(); reads.wait()
-                guard process.terminationStatus == 0 else {
-                    let message = String(data: stderr, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "yt-dlp exited with code \(process.terminationStatus)."
-                    throw NSError(domain: "VideoInfo", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
-                }
-                let metadata = try VideoMetadata(json: stdout)
-                DispatchQueue.main.async { self?.finishVideoInfo(.success(metadata), requestedURL: url) }
-            } catch {
-                DispatchQueue.main.async { self?.finishVideoInfo(.failure(error), requestedURL: url) }
-            }
-        }
-    }
-
-    private func finishVideoInfo(_ result: Result<VideoMetadata, Error>, requestedURL: String) {
-        activeVideoInfoProcess = nil
-        isRetrievingVideoInfo = false
-        videoInfoButton.isEnabled = isValidMetadataURL(currentURLText())
-        progressDetailsLabel.stringValue = activeDownloadProcess?.isRunning == true ? progressDetailsLabel.stringValue : "Enter a URL and click Download to start."
-        switch result {
-        case .success(let metadata):
+        if let metadata = cachedVideoMetadata[url] {
             let controller = videoInfoWindowController ?? VideoInfoWindowController()
             videoInfoWindowController = controller
             controller.display(metadata)
-            appendLog("Full video information loaded: \(metadata.title ?? requestedURL) (\(metadata.formats.count) formats).\n")
-        case .failure(let error):
-            appendLog("Unable to retrieve video information: \(error.localizedDescription)\n")
-            let alert = NSAlert(); alert.messageText = "Unable to retrieve video information."; alert.informativeText = error.localizedDescription; alert.alertStyle = .warning
-            if let window = view.window { alert.beginSheetModal(for: window) }
+            appendLog("Displayed cached video information: \(metadata.title ?? url).\n")
+            return
         }
+        let message = (isPreparingDownload || activeDownloadProcess?.isRunning == true) && activeDownloadSourceURL == url
+            ? "Video information is still being retrieved."
+            : "No video information is available. Download this URL first."
+        appendLog(message + "\n")
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.alertStyle = .informational
+        if let window = view.window { alert.beginSheetModal(for: window) }
     }
 
-    @objc private func applicationWillTerminate() {
-        if activeVideoInfoProcess?.isRunning == true { activeVideoInfoProcess?.terminate() }
-    }
-
-    private func clearVideoMetadata() {
-        metadataURL = nil
-        metadataTitle = nil
+    private func clearDisplayedVideoMetadata() {
         videoTitleLabel.stringValue = ""
         videoTitleLabel.toolTip = nil
         videoUploaderLabel.stringValue = ""
         videoInformationView.isHidden = true
     }
 
-    private func fetchVideoMetadata(for url: String) {
-        guard isValidMetadataURL(url), metadataURL != url else { return }
-        metadataURL = url
-        appendLog("Retrieving video information…\n")
-
-        YTDLPManager.shared.executableURL(log: { [weak self] in self?.appendLog($0) }) { [weak self] result in
-            guard let self, self.metadataURL == url else { return }
-            switch result {
-            case .failure(let error):
-                self.metadataURL = nil
-                self.appendLog("Could not retrieve video information: \(error.localizedDescription)\n")
-            case .success(let executableURL):
-                self.runMetadataExtraction(for: url, executableURL: executableURL)
-            }
-        }
-    }
-
-    private func runMetadataExtraction(for url: String, executableURL: URL) {
-        let process = Process()
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.executableURL = executableURL
-        process.arguments = ytDLPConfigurationArguments(logRuntimeStatus: false) + [
-            "--skip-download",
-            "--no-playlist",
-            "--dump-single-json",
-            url
-        ]
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-        metadataProcess = process
-
-        DispatchQueue.global(qos: .utility).async { [weak self, weak process] in
-            guard let self, let process else { return }
-            do {
-                try process.run()
-                let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                let errorText = String(data: errorData, encoding: .utf8) ?? ""
-
-                DispatchQueue.main.async {
-                    guard self.metadataURL == url else { return }
-                    self.metadataProcess = nil
-                    guard process.terminationStatus == 0,
-                          let object = try? JSONSerialization.jsonObject(with: outputData) as? [String: Any],
-                          let title = object["title"] as? String,
-                          !title.isEmpty else {
-                        self.metadataURL = nil
-                        self.appendLog("Could not retrieve video information. \(errorText.trimmingCharacters(in: .whitespacesAndNewlines))\n")
-                        return
-                    }
-
-                    let uploader = (object["channel"] as? String)
-                        ?? (object["uploader"] as? String)
-                        ?? "Unknown channel"
-                    self.metadataTitle = title
-                    self.videoTitleLabel.stringValue = title
-                    self.videoTitleLabel.toolTip = title
-                    self.videoUploaderLabel.stringValue = uploader
-                    self.videoInformationView.isHidden = false
-                    self.appendLog("Video information loaded: \(title) — \(uploader)\n")
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    guard self.metadataURL == url else { return }
-                    self.metadataProcess = nil
-                    self.metadataURL = nil
-                    self.appendLog("Could not launch yt-dlp for video information: \(error.localizedDescription)\n")
-                }
-            }
-        }
+    private func displayHeadline(_ metadata: VideoMetadata) {
+        let title = metadata.title ?? "Untitled Video"
+        videoTitleLabel.stringValue = title
+        videoTitleLabel.toolTip = title
+        videoUploaderLabel.stringValue = metadata.displayUploader ?? "Unknown channel"
+        videoInformationView.isHidden = false
     }
 
     func validateExecutable(path: String, name: String) -> Bool {

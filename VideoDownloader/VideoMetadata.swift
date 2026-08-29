@@ -1,6 +1,9 @@
 import Foundation
 
 struct VideoMetadata {
+    static let linePrefix = "VDMETA:"
+    static let printTemplate = "before_dl:VDMETA:%()j"
+
     struct Chapter { let start, end: Double?; let title: String }
     struct Thumbnail { let url: String; let width, height: Int? }
     struct Format {
@@ -18,7 +21,7 @@ struct VideoMetadata {
     }
 
     let id, title, uploader, uploaderID, channel, channelID, webpageURL: String?
-    let duration: Double?
+    var duration: Double?
     let description, uploadDate, releaseDate, liveStatus, language: String?
     let viewCount, likeCount, commentCount, subscriberCount: Int64?
     let averageRating: Double?
@@ -28,10 +31,11 @@ struct VideoMetadata {
     let thumbnails: [Thumbnail]
     let subtitles, automaticCaptions: [String]
     let categories, tags: [String]
-    let extractor, extractorKey, extensionName, selectedFormat, videoCodec, audioCodec: String?
-    let width, height: Int?
-    let fps, bitrate, fileSize, sampleRate: Double?
-    let audioChannels: Int?
+    let extractor, extractorKey: String?
+    var extensionName, selectedFormat, videoCodec, audioCodec: String?
+    var width, height: Int?
+    var fps, bitrate, fileSize, sampleRate: Double?
+    var audioChannels: Int?
     let rawJSON: Data
 
     init(json data: Data) throws {
@@ -63,6 +67,34 @@ struct VideoMetadata {
         width = int("width"); height = int("height"); fps = double("fps"); bitrate = double("tbr")
         fileSize = double("filesize") ?? double("filesize_approx"); sampleRate = double("asr"); audioChannels = int("audio_channels")
         rawJSON = data
+    }
+
+    /// Adds final-file properties from bundled ffprobe without contacting the source website.
+    mutating func applyLocalFileProbe(json data: Data) throws {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CocoaError(.propertyListReadCorrupt)
+        }
+        let streams = root["streams"] as? [[String: Any]] ?? []
+        let video = streams.first { ($0["codec_type"] as? String) == "video" }
+        let audio = streams.first { ($0["codec_type"] as? String) == "audio" }
+        let format = root["format"] as? [String: Any]
+
+        width = Self.int(video?["width"]) ?? width
+        height = Self.int(video?["height"]) ?? height
+        videoCodec = (video?["codec_name"] as? String) ?? videoCodec
+        audioCodec = (audio?["codec_name"] as? String) ?? audioCodec
+        sampleRate = Self.double(audio?["sample_rate"]) ?? sampleRate
+        audioChannels = Self.int(audio?["channels"]) ?? audioChannels
+        fileSize = Self.double(format?["size"]) ?? fileSize
+        duration = duration ?? Self.double(format?["duration"])
+        if let rate = (video?["avg_frame_rate"] as? String) ?? (video?["r_frame_rate"] as? String) {
+            let parts = rate.split(separator: "/").compactMap { Double($0) }
+            if parts.count == 2, parts[1] != 0 { fps = parts[0] / parts[1] }
+            else if let value = parts.first { fps = value }
+        }
+        if let formatName = format?["format_name"] as? String {
+            extensionName = formatName.split(separator: ",").first.map(String.init) ?? extensionName
+        }
     }
 
     var displayUploader: String? { channel ?? uploader }
