@@ -10,8 +10,29 @@ import Darwin
 
 class ViewController: NSViewController, NSTextFieldDelegate {
 
-    private let defaultLaunchContentSize = NSSize(width: 900, height: 1000)
-    private let minimumUsableContentSize = NSSize(width: 850, height: 960)
+    private enum BrowserCookieSource: String, CaseIterable {
+        case none = "None"
+        case safari = "Safari"
+        case chrome = "Chrome"
+        case firefox = "Firefox"
+        case brave = "Brave"
+        case edge = "Edge"
+
+        var ytDLPName: String? {
+            switch self {
+            case .none: nil
+            case .safari: "safari"
+            case .chrome: "chrome"
+            case .firefox: "firefox"
+            case .brave: "brave"
+            case .edge: "edge"
+            }
+        }
+    }
+
+    private let browserCookieSourceDefaultsKey = "BrowserCookieSource"
+    private let defaultLaunchContentSize = NSSize(width: 900, height: 1068)
+    private let minimumUsableContentSize = NSSize(width: 850, height: 1028)
     private var didConfigureLaunchWindow = false
 
     @IBOutlet weak var urlTextField: NSTextField!
@@ -28,6 +49,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     var progressDetailsLabel: NSTextField!
     var revealButton: NSButton!
     var qualityPopupButton: NSPopUpButton!
+    var browserCookiePopupButton: NSPopUpButton!
     var ytDLPUpdateButton: NSButton!
     var ytDLPChannelPopup: NSPopUpButton!
     var ytDLPVersionLabel: NSTextField!
@@ -166,6 +188,18 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         let selectorRow = makeHorizontalStack(spacing: 12, views: [typeCard, qualityCard])
         selectorRow.distribution = .fillEqually
 
+        let browserCookiePopup = makePopup(items: BrowserCookieSource.allCases.map(\.rawValue))
+        browserCookiePopup.target = self
+        browserCookiePopup.action = #selector(browserCookieSourceChanged(_:))
+        browserCookiePopup.selectItem(withTitle: selectedBrowserCookieSource.rawValue)
+        browserCookiePopup.toolTip = "Cookies may be needed when YouTube requests sign-in or bot verification. Cookies are read only when you select a browser."
+        let browserCookieRow = makeInputRow(
+            symbolName: "person.badge.key",
+            title: "Browser Cookies",
+            subtitle: "Use browser sign-in when YouTube requires verification",
+            trailingView: browserCookiePopup
+        )
+
         let chaptersCheckbox = NSButton(checkboxWithTitle: "Preserve Chapters", target: nil, action: nil)
         chaptersCheckbox.translatesAutoresizingMaskIntoConstraints = false
         chaptersCheckbox.state = .on
@@ -265,7 +299,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         ])
         footerRow.distribution = .fillEqually
 
-        [appIcon, titleLabel, subtitleLabel, urlRow, informationCard, folderRow, selectorRow, chaptersCard, downloadControls, statusPanel, footerRow].forEach {
+        [appIcon, titleLabel, subtitleLabel, urlRow, informationCard, folderRow, selectorRow, browserCookieRow, chaptersCard, downloadControls, statusPanel, footerRow].forEach {
             stack.addArrangedSubview($0)
         }
 
@@ -277,6 +311,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         urlTextField = urlField
         modePopupButton = modePopup
         qualityPopupButton = qualityPopup
+        browserCookiePopupButton = browserCookiePopup
         preserveChaptersCheckbox = chaptersCheckbox
         saveTranscriptCheckbox = transcriptCheckbox
         videoTitleLabel = headlineLabel
@@ -331,6 +366,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             informationCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             folderRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             selectorRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            browserCookieRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             chaptersCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             downloadControls.widthAnchor.constraint(equalTo: stack.widthAnchor),
             downloadButton.heightAnchor.constraint(equalToConstant: 52),
@@ -341,6 +377,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
             modePopup.widthAnchor.constraint(equalToConstant: 150),
             qualityPopup.widthAnchor.constraint(equalToConstant: 150),
+            browserCookiePopup.widthAnchor.constraint(equalToConstant: 150),
 
             statusStack.topAnchor.constraint(equalTo: statusPanel.topAnchor, constant: 16),
             statusStack.leadingAnchor.constraint(equalTo: statusPanel.leadingAnchor, constant: 18),
@@ -861,6 +898,7 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             "--print", "after_move:filepath"
         ]
         arguments += ytDLPConfigurationArguments(logRuntimeStatus: true)
+        arguments += browserCookieArguments()
 
         if shouldSaveTranscript {
             appendLog("Transcript requested.\n")
@@ -1060,6 +1098,18 @@ class ViewController: NSViewController, NSTextFieldDelegate {
               let channel = YTDLPManager.UpdateChannel(rawValue: title.lowercased()) else { return }
         YTDLPManager.shared.selectedChannel = channel
         appendLog("yt-dlp update channel set to \(channel.displayName).\n")
+    }
+
+    @objc private func browserCookieSourceChanged(_ sender: NSPopUpButton) {
+        guard let title = sender.titleOfSelectedItem,
+              let source = BrowserCookieSource(rawValue: title) else { return }
+
+        UserDefaults.standard.set(source.rawValue, forKey: browserCookieSourceDefaultsKey)
+        if source == .none {
+            appendLog("Browser cookie authentication disabled.\n")
+        } else {
+            appendLog("Browser cookie authentication set to \(source.rawValue).\n")
+        }
     }
 
     private func runYTDLPUpdate(manual: Bool) {
@@ -1516,6 +1566,24 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         ].compactMap { $0 }
 
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    private var selectedBrowserCookieSource: BrowserCookieSource {
+        guard let savedValue = UserDefaults.standard.string(forKey: browserCookieSourceDefaultsKey),
+              let source = BrowserCookieSource(rawValue: savedValue) else {
+            return .none
+        }
+        return source
+    }
+
+    /// Returns no authentication arguments unless the user explicitly selected a browser.
+    private func browserCookieArguments() -> [String] {
+        guard let browser = selectedBrowserCookieSource.ytDLPName else {
+            return []
+        }
+
+        appendLog("Using cookies from \(selectedBrowserCookieSource.rawValue) for this download.\n")
+        return ["--cookies-from-browser", browser]
     }
 
     /// Metadata inspection and downloads share these arguments so JavaScript/EJS
