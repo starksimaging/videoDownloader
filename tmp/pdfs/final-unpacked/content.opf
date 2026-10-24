@@ -1,0 +1,33 @@
+<?xml version='1.0' encoding='utf-8'?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uuid_id">
+  <metadata xmlns:opf="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:calibre="http://calibre.kovidgoyal.net/2009/metadata">
+    <dc:title>Simply The Seen: Self-Inquiry Guide to the Sixth Fetter</dc:title>
+    <meta name="calibre:timestamp" content="2026-09-11T10:18:00.099927+00:00"/>
+    <dc:language>en</dc:language>
+    <dc:creator opf:file-as="Unknown" opf:role="aut">Kevin Schanilec</dc:creator>
+    <dc:identifier id="uuid_id" opf:scheme="uuid">ce234212-d3ea-46a4-af10-92ee538b64cc</dc:identifier>
+  </metadata>
+  <manifest>
+    <item id="html8" href="fetter6-clean_split_000.html" media-type="application/xhtml+xml"/>
+    <item id="html7" href="fetter6-clean_split_001.html" media-type="application/xhtml+xml"/>
+    <item id="html6" href="fetter6-clean_split_002.html" media-type="application/xhtml+xml"/>
+    <item id="html5" href="fetter6-clean_split_003.html" media-type="application/xhtml+xml"/>
+    <item id="html4" href="fetter6-clean_split_004.html" media-type="application/xhtml+xml"/>
+    <item id="html3" href="fetter6-clean_split_005.html" media-type="application/xhtml+xml"/>
+    <item id="html2" href="fetter6-clean_split_006.html" media-type="application/xhtml+xml"/>
+    <item id="html1" href="fetter6-clean_split_007.html" media-type="application/xhtml+xml"/>
+    <item id="page_css" href="page_styles.css" media-type="text/css"/>
+    <item id="css" href="stylesheet.css" media-type="text/css"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="html8"/>
+    <itemref idref="html7"/>
+    <itemref idref="html6"/>
+    <itemref idref="html5"/>
+    <itemref idref="html4"/>
+    <itemref idref="html3"/>
+    <itemref idref="html2"/>
+    <itemref idref="html1"/>
+  </spine>
+</package>
