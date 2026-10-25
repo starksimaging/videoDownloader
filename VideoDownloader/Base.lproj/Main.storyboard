@@ -688,7 +688,7 @@
                     <window key="window" title="Window" allowsToolTipsWhenApplicationIsInactive="NO" autorecalculatesKeyViewLoop="NO" releasedWhenClosed="NO" visibleAtLaunch="NO" animationBehavior="default" id="IQv-IB-iLA">
                         <windowStyleMask key="styleMask" titled="YES" closable="YES" miniaturizable="YES" resizable="YES"/>
                         <windowPositionMask key="initialPositionMask" leftStrut="YES" rightStrut="YES" topStrut="YES" bottomStrut="YES"/>
-                        <rect key="contentRect" x="196" y="240" width="900" height="900"/>
+                        <rect key="contentRect" x="196" y="240" width="1000" height="750"/>
                         <rect key="screenRect" x="0.0" y="0.0" width="1680" height="1027"/>
                         <connections>
                             <outlet property="delegate" destination="B8D-0N-5wS" id="98r-iN-zZc"/>
@@ -707,11 +707,11 @@
             <objects>
                 <viewController id="XfG-lQ-9wD" customClass="ViewController" customModule="VideoDownloader" customModuleProvider="target" sceneMemberID="viewController">
                     <view key="view" id="m2S-Jp-Qdl">
-                        <rect key="frame" x="0.0" y="0.0" width="900" height="1000"/>
+                        <rect key="frame" x="0.0" y="0.0" width="1000" height="750"/>
                         <autoresizingMask key="autoresizingMask"/>
                         <subviews>
                             <textField focusRingType="none" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="url-TF-001">
-                                <rect key="frame" x="18" y="231" width="444" height="16"/>
+                                <rect key="frame" x="18" y="711" width="964" height="16"/>
                                 <textFieldCell key="cell" lineBreakMode="clipping" placeholderString="Video URL" id="url-TF-cell">
                                     <font key="font" metaFont="system"/>
                                     <color key="textColor" name="controlTextColor" catalog="System" colorSpace="catalog"/>
@@ -720,22 +720,24 @@
                             </textField>
                             <textField hidden="YES" focusRingType="none" id="video-title-LBL-001">
                                 <rect key="frame" x="20" y="190" width="440" height="58"/>
-                                <textFieldCell key="cell" lineBreakMode="truncatingTail" title="" id="video-title-LBL-cell">
-                                    <font key="font" size="28" name=".AppleSystemUIFontSemibold"/>
+                                <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
+                                <textFieldCell key="cell" lineBreakMode="truncatingTail" id="video-title-LBL-cell">
+                                    <font key="font" metaFont="system" size="28"/>
                                     <color key="textColor" name="labelColor" catalog="System" colorSpace="catalog"/>
                                     <color key="backgroundColor" name="controlColor" catalog="System" colorSpace="catalog"/>
                                 </textFieldCell>
                             </textField>
                             <textField hidden="YES" focusRingType="none" id="video-uploader-LBL-001">
                                 <rect key="frame" x="20" y="170" width="440" height="17"/>
-                                <textFieldCell key="cell" lineBreakMode="truncatingTail" title="" id="video-uploader-LBL-cell">
+                                <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
+                                <textFieldCell key="cell" lineBreakMode="truncatingTail" id="video-uploader-LBL-cell">
                                     <font key="font" metaFont="system" size="14"/>
                                     <color key="textColor" name="secondaryLabelColor" catalog="System" colorSpace="catalog"/>
                                     <color key="backgroundColor" name="controlColor" catalog="System" colorSpace="catalog"/>
                                 </textFieldCell>
                             </textField>
                             <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="choose-BTN-001">
-                                <rect key="frame" x="20" y="197" width="316" height="24"/>
+                                <rect key="frame" x="20" y="677" width="836" height="24"/>
                                 <buttonCell key="cell" type="push" title="Choose Folder" bezelStyle="rounded" alignment="center" borderStyle="border" imageScaling="proportionallyDown" inset="2" id="choose-BTN-cell">
                                     <behavior key="behavior" pushIn="YES" lightByBackground="YES" lightByGray="YES"/>
                                     <font key="font" metaFont="system"/>
@@ -745,7 +747,7 @@
                                 </connections>
                             </button>
                             <textField focusRingType="none" horizontalHuggingPriority="251" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="folder-LBL-001">
-                                <rect key="frame" x="346" y="201" width="116" height="16"/>
+                                <rect key="frame" x="866" y="681" width="116" height="16"/>
                                 <textFieldCell key="cell" lineBreakMode="truncatingMiddle" title="No folder selected" id="folder-LBL-cell">
                                     <font key="font" metaFont="system"/>
                                     <color key="textColor" name="secondaryLabelColor" catalog="System" colorSpace="catalog"/>
@@ -753,7 +755,7 @@
                                 </textFieldCell>
                             </textField>
                             <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="download-BTN-001">
-                                <rect key="frame" x="20" y="168" width="123" height="24"/>
+                                <rect key="frame" x="20" y="648" width="123" height="24"/>
                                 <buttonCell key="cell" type="push" title="Download Video" bezelStyle="rounded" alignment="center" borderStyle="border" imageScaling="proportionallyDown" inset="2" id="download-BTN-cell">
                                     <behavior key="behavior" pushIn="YES" lightByBackground="YES" lightByGray="YES"/>
                                     <font key="font" metaFont="system"/>
@@ -763,14 +765,14 @@
                                 </connections>
                             </button>
                             <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="chapters-CB-001">
-                                <rect key="frame" x="160" y="168" width="135" height="18"/>
+                                <rect key="frame" x="160" y="652" width="135" height="16"/>
                                 <buttonCell key="cell" type="check" title="Preserve Chapters" bezelStyle="regularSquare" imagePosition="left" state="on" inset="2" id="chapters-CB-cell">
                                     <behavior key="behavior" changeContents="YES" doesNotDimImage="YES" lightByContents="YES"/>
                                     <font key="font" metaFont="system"/>
                                 </buttonCell>
                             </button>
                             <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="clear-BTN-001">
-                                <rect key="frame" x="378" y="168" width="82" height="24"/>
+                                <rect key="frame" x="898" y="648" width="82" height="24"/>
                                 <buttonCell key="cell" type="push" title="Clear Log" bezelStyle="rounded" alignment="center" borderStyle="border" imageScaling="proportionallyDown" inset="2" id="clear-BTN-cell">
                                     <behavior key="behavior" pushIn="YES" lightByBackground="YES" lightByGray="YES"/>
                                     <font key="font" metaFont="system"/>
@@ -780,17 +782,17 @@
                                 </connections>
                             </button>
                             <scrollView borderType="line" autohidesScrollers="YES" horizontalLineScroll="16" horizontalPageScroll="10" verticalLineScroll="16" verticalPageScroll="10" translatesAutoresizingMaskIntoConstraints="NO" id="log-SV-001">
-                                <rect key="frame" x="20" y="20" width="440" height="140"/>
+                                <rect key="frame" x="20" y="20" width="960" height="620"/>
                                 <clipView key="contentView" id="log-CV-001">
-                                    <rect key="frame" x="1" y="1" width="438" height="138"/>
+                                    <rect key="frame" x="1" y="1" width="958" height="618"/>
                                     <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                                     <subviews>
                                         <textView importsGraphics="NO" richText="NO" horizontallyResizable="YES" verticallyResizable="YES" usesFontPanel="YES" findStyle="panel" continuousSpellChecking="YES" allowsUndo="YES" id="log-TV-001">
-                                            <rect key="frame" x="0.0" y="0.0" width="438" height="138"/>
+                                            <rect key="frame" x="0.0" y="0.0" width="958" height="618"/>
                                             <autoresizingMask key="autoresizingMask"/>
                                             <color key="textColor" name="textColor" catalog="System" colorSpace="catalog"/>
                                             <color key="backgroundColor" name="textBackgroundColor" catalog="System" colorSpace="catalog"/>
-                                            <size key="minSize" width="438" height="138"/>
+                                            <size key="minSize" width="958" height="618"/>
                                             <size key="maxSize" width="10000000" height="10000000"/>
                                         </textView>
                                     </subviews>
@@ -800,20 +802,20 @@
                                     <autoresizingMask key="autoresizingMask"/>
                                 </scroller>
                                 <scroller key="verticalScroller" hidden="YES" wantsLayer="YES" horizontal="NO" id="log-VS-001">
-                                    <rect key="frame" x="423" y="1" width="16" height="124"/>
+                                    <rect key="frame" x="942" y="1" width="17" height="618"/>
                                     <autoresizingMask key="autoresizingMask"/>
                                 </scroller>
                             </scrollView>
                         </subviews>
                         <constraints>
+                            <constraint firstItem="chapters-CB-001" firstAttribute="centerY" secondItem="download-BTN-001" secondAttribute="centerY" id="chapters-center-001"/>
+                            <constraint firstItem="chapters-CB-001" firstAttribute="leading" secondItem="download-BTN-001" secondAttribute="trailing" constant="17" id="chapters-leading-001"/>
                             <constraint firstItem="choose-BTN-001" firstAttribute="leading" secondItem="m2S-Jp-Qdl" secondAttribute="leading" constant="20" id="choose-leading-001"/>
                             <constraint firstItem="choose-BTN-001" firstAttribute="top" secondItem="url-TF-001" secondAttribute="bottom" constant="10" id="choose-top-001"/>
                             <constraint firstItem="clear-BTN-001" firstAttribute="centerY" secondItem="download-BTN-001" secondAttribute="centerY" id="clear-center-001"/>
                             <constraint firstAttribute="trailing" secondItem="clear-BTN-001" secondAttribute="trailing" constant="20" id="clear-trailing-001"/>
                             <constraint firstItem="download-BTN-001" firstAttribute="leading" secondItem="m2S-Jp-Qdl" secondAttribute="leading" constant="20" id="download-leading-001"/>
                             <constraint firstItem="download-BTN-001" firstAttribute="top" secondItem="choose-BTN-001" secondAttribute="bottom" constant="5" id="download-top-001"/>
-                            <constraint firstItem="chapters-CB-001" firstAttribute="centerY" secondItem="download-BTN-001" secondAttribute="centerY" id="chapters-center-001"/>
-                            <constraint firstItem="chapters-CB-001" firstAttribute="leading" secondItem="download-BTN-001" secondAttribute="trailing" constant="17" id="chapters-leading-001"/>
                             <constraint firstItem="folder-LBL-001" firstAttribute="centerY" secondItem="choose-BTN-001" secondAttribute="centerY" id="folder-center-001"/>
                             <constraint firstItem="folder-LBL-001" firstAttribute="leading" secondItem="choose-BTN-001" secondAttribute="trailing" constant="12" id="folder-leading-001"/>
                             <constraint firstAttribute="trailing" secondItem="folder-LBL-001" secondAttribute="trailing" constant="20" id="folder-trailing-001"/>

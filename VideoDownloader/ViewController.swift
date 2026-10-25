@@ -8,6 +8,10 @@
 import Cocoa
 import Darwin
 
+private final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 class ViewController: NSViewController, NSTextFieldDelegate {
 
     private enum BrowserCookieSource: String, CaseIterable {
@@ -31,9 +35,11 @@ class ViewController: NSViewController, NSTextFieldDelegate {
     }
 
     private let browserCookieSourceDefaultsKey = "BrowserCookieSource"
-    private let defaultLaunchContentSize = NSSize(width: 900, height: 1068)
-    private let minimumUsableContentSize = NSSize(width: 850, height: 1028)
+    private let defaultLaunchContentSize = NSSize(width: 1000, height: 750)
+    private let minimumUsableContentSize = NSSize(width: 900, height: 650)
+    private let mainWindowFrameDefaultsKey = "VideoDownloaderMainWindowFrame"
     private var didConfigureLaunchWindow = false
+    private var windowFrameObservers: [NSObjectProtocol] = []
 
     @IBOutlet weak var urlTextField: NSTextField!
     @IBOutlet weak var modePopupButton: NSPopUpButton!
@@ -85,20 +91,98 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         didConfigureLaunchWindow = true
 
         window.title = "Video Downloader"
+        window.styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable])
+        window.contentResizeIncrements = NSSize(width: 1, height: 1)
+        window.aspectRatio = .zero
 
-        // The interface is taller than the small storyboard placeholder window.
-        // contentMinSize keeps normal resizing available while preventing the
-        // controls from being hidden by an unusably small window.
-        window.contentMinSize = minimumUsableContentSize
+        // Use one predictable frame-restoration mechanism. AppKit state restoration
+        // and frame autosaving can otherwise race and reapply an obsolete tiny frame.
+        window.isRestorable = false
 
-        // If macOS window restoration brings back an old tiny frame, replace it
-        // with a usable launch size. A larger user-saved size is left alone.
-        let currentContentSize = window.contentLayoutRect.size
-        if currentContentSize.width < minimumUsableContentSize.width ||
-            currentContentSize.height < minimumUsableContentSize.height {
-            window.setContentSize(defaultLaunchContentSize)
-            window.center()
+        let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame
+        let maximumContentSize = visibleFrame.map {
+            window.contentRect(forFrameRect: NSRect(origin: .zero, size: $0.size)).size
+        } ?? defaultLaunchContentSize
+        let effectiveMinimumSize = NSSize(
+            width: min(minimumUsableContentSize.width, maximumContentSize.width),
+            height: min(minimumUsableContentSize.height, maximumContentSize.height)
+        )
+        window.contentMinSize = effectiveMinimumSize
+
+        // Avoid setFrameUsingName here. AppKit can trap while applying an old
+        // undersized frame to a constraint-based window. Read and validate the
+        // standard autosave value first, then apply only a safe frame.
+        var restoredSavedFrame = false
+        if let values = UserDefaults.standard.dictionary(forKey: mainWindowFrameDefaultsKey),
+           let x = values["x"] as? Double,
+           let y = values["y"] as? Double,
+           let width = values["width"] as? Double,
+           let height = values["height"] as? Double {
+            let savedFrame = NSRect(x: x, y: y, width: width, height: height)
+            let minimumFrameSize = window.frameRect(
+                forContentRect: NSRect(origin: .zero, size: effectiveMinimumSize)
+            ).size
+            if savedFrame.width.isFinite, savedFrame.height.isFinite,
+               savedFrame.width >= minimumFrameSize.width,
+               savedFrame.height >= minimumFrameSize.height,
+               savedFrame.width <= 10_000, savedFrame.height <= 10_000 {
+                window.setFrame(savedFrame, display: false)
+                restoredSavedFrame = true
+            }
         }
+
+        let restoredSize = window.contentLayoutRect.size
+        let restoredFrameIsUsable = restoredSavedFrame &&
+            restoredSize.width >= effectiveMinimumSize.width &&
+            restoredSize.height >= effectiveMinimumSize.height
+
+        if !restoredFrameIsUsable {
+            window.setContentSize(NSSize(
+                width: min(defaultLaunchContentSize.width, maximumContentSize.width),
+                height: min(defaultLaunchContentSize.height, maximumContentSize.height)
+            ))
+            window.center()
+        } else if let visibleFrame, !visibleFrame.contains(window.frame) {
+            // Keep the user's valid size while moving an off-screen restored frame
+            // back into the current display's visible work area.
+            var fittedFrame = window.frame
+            fittedFrame.size.width = min(fittedFrame.width, visibleFrame.width)
+            fittedFrame.size.height = min(fittedFrame.height, visibleFrame.height)
+            fittedFrame.origin.x = min(max(fittedFrame.minX, visibleFrame.minX), visibleFrame.maxX - fittedFrame.width)
+            fittedFrame.origin.y = min(max(fittedFrame.minY, visibleFrame.minY), visibleFrame.maxY - fittedFrame.height)
+            window.setFrame(fittedFrame, display: true)
+        }
+
+        // Set the frame-level limits last. This prevents a storyboard-derived
+        // fitting size from leaving minSize.width and maxSize.width equal, which
+        // makes AppKit accept vertical drags while discarding horizontal ones.
+        window.minSize = window.frameRect(
+            forContentRect: NSRect(origin: .zero, size: effectiveMinimumSize)
+        ).size
+        // NSWindow cannot safely use CGFloat.greatestFiniteMagnitude here;
+        // AppKit may overflow its display region while restoring a saved frame.
+        // This finite ceiling is effectively unrestricted for a desktop window.
+        window.contentMaxSize = NSSize(width: 10_000, height: 10_000)
+
+        let notificationCenter = NotificationCenter.default
+        windowFrameObservers = [NSWindow.didEndLiveResizeNotification, NSWindow.didMoveNotification].map { name in
+            notificationCenter.addObserver(forName: name, object: window, queue: .main) { [weak self, weak window] _ in
+                guard let self, let window else { return }
+                self.saveMainWindowFrame(window.frame)
+            }
+        }
+    }
+
+    private func saveMainWindowFrame(_ frame: NSRect) {
+        guard frame.width.isFinite, frame.height.isFinite,
+              frame.width > 0, frame.height > 0,
+              frame.width <= 10_000, frame.height <= 10_000 else { return }
+        UserDefaults.standard.set([
+            "x": frame.origin.x,
+            "y": frame.origin.y,
+            "width": frame.width,
+            "height": frame.height
+        ], forKey: mainWindowFrameDefaultsKey)
     }
 
     func buildInterface() {
@@ -106,6 +190,22 @@ class ViewController: NSViewController, NSTextFieldDelegate {
 
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.black.cgColor
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let contentScrollView = NSScrollView()
+        contentScrollView.translatesAutoresizingMaskIntoConstraints = false
+        contentScrollView.drawsBackground = false
+        contentScrollView.borderType = .noBorder
+        contentScrollView.hasVerticalScroller = true
+        contentScrollView.hasHorizontalScroller = false
+        contentScrollView.autohidesScrollers = true
+
+        let canvasView = FlippedDocumentView()
+        canvasView.translatesAutoresizingMaskIntoConstraints = false
+        canvasView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        canvasView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        contentScrollView.documentView = canvasView
 
         let backgroundView = BackgroundImageView()
         backgroundView.translatesAutoresizingMaskIntoConstraints = false
@@ -303,9 +403,10 @@ class ViewController: NSViewController, NSTextFieldDelegate {
             stack.addArrangedSubview($0)
         }
 
-        view.addSubview(backgroundView)
-        view.addSubview(overlayView)
-        view.addSubview(panel)
+        view.addSubview(contentScrollView)
+        canvasView.addSubview(backgroundView)
+        canvasView.addSubview(overlayView)
+        canvasView.addSubview(panel)
         panel.addSubview(stack)
 
         urlTextField = urlField
@@ -332,27 +433,39 @@ class ViewController: NSViewController, NSTextFieldDelegate {
         self.videoInfoButton = infoButton
         statusCopy.insertArrangedSubview(versionLabel, at: 2)
 
-        let panelWidth = panel.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.66)
+        // Track the viewport width (up to the design's maximum) so horizontal
+        // window drags immediately resize the interface instead of leaving a
+        // fixed-width panel centered inside the window.
+        let panelWidth = panel.widthAnchor.constraint(equalTo: canvasView.widthAnchor, constant: -64)
         panelWidth.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
-            backgroundView.topAnchor.constraint(equalTo: view.topAnchor),
-            backgroundView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            backgroundView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            backgroundView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            contentScrollView.topAnchor.constraint(equalTo: view.topAnchor),
+            contentScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            contentScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentScrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            canvasView.widthAnchor.constraint(equalTo: contentScrollView.contentView.widthAnchor),
+            canvasView.heightAnchor.constraint(greaterThanOrEqualTo: contentScrollView.contentView.heightAnchor),
 
-            overlayView.topAnchor.constraint(equalTo: view.topAnchor),
-            overlayView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            overlayView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            overlayView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            backgroundView.topAnchor.constraint(equalTo: canvasView.topAnchor),
+            backgroundView.leadingAnchor.constraint(equalTo: canvasView.leadingAnchor),
+            backgroundView.trailingAnchor.constraint(equalTo: canvasView.trailingAnchor),
+            backgroundView.bottomAnchor.constraint(equalTo: canvasView.bottomAnchor),
 
-            panel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            panel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            overlayView.topAnchor.constraint(equalTo: canvasView.topAnchor),
+            overlayView.leadingAnchor.constraint(equalTo: canvasView.leadingAnchor),
+            overlayView.trailingAnchor.constraint(equalTo: canvasView.trailingAnchor),
+            overlayView.bottomAnchor.constraint(equalTo: canvasView.bottomAnchor),
+
+            panel.centerXAnchor.constraint(equalTo: canvasView.centerXAnchor),
+            panel.centerYAnchor.constraint(equalTo: canvasView.centerYAnchor),
             panelWidth,
-            panel.widthAnchor.constraint(greaterThanOrEqualToConstant: 720),
+            panel.widthAnchor.constraint(greaterThanOrEqualToConstant: 640),
             panel.widthAnchor.constraint(lessThanOrEqualToConstant: 980),
-            panel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 32),
-            panel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -32),
+            panel.leadingAnchor.constraint(greaterThanOrEqualTo: canvasView.leadingAnchor, constant: 32),
+            panel.trailingAnchor.constraint(lessThanOrEqualTo: canvasView.trailingAnchor, constant: -32),
+            panel.topAnchor.constraint(greaterThanOrEqualTo: canvasView.topAnchor, constant: 32),
+            panel.bottomAnchor.constraint(lessThanOrEqualTo: canvasView.bottomAnchor, constant: -32),
 
             stack.topAnchor.constraint(equalTo: panel.topAnchor, constant: 34),
             stack.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 34),
